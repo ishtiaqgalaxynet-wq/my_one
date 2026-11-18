@@ -1,13 +1,53 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
+export const SCOPES = [
+  'https://www.googleapis.com/auth/drive.file',
+];
+
+const databaseId = (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId;
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = databaseId ? getFirestore(app, databaseId) : getFirestore(app);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+SCOPES.forEach((scope) => googleProvider.addScope(scope));
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+// Strict in-memory cache for the Google Drive OAuth access token (never localStorage/sessionStorage)
+let cachedDriveAccessToken: string | null = null;
+
+export function getCachedDriveAccessToken(): string | null {
+  return cachedDriveAccessToken;
+}
+
+export function setCachedDriveAccessToken(token: string | null): void {
+  cachedDriveAccessToken = token && token.trim().length > 0 ? token : null;
+}
+
+export function clearCachedDriveAccessToken(): void {
+  cachedDriveAccessToken = null;
+}
+
+export async function requestGoogleDriveAccessToken(): Promise<string> {
+  const driveProvider = new GoogleAuthProvider();
+  SCOPES.forEach((scope) => driveProvider.addScope(scope));
+  const currentEmail = auth.currentUser?.email;
+  driveProvider.setCustomParameters(
+    currentEmail
+      ? { login_hint: currentEmail, prompt: 'consent' }
+      : { prompt: 'select_account' }
+  );
+
+  const result = await signInWithPopup(auth, driveProvider);
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  if (!credential?.accessToken) {
+    throw new Error('Could not obtain Google Drive access token.');
+  }
+  setCachedDriveAccessToken(credential.accessToken);
+  return credential.accessToken;
+}
 
 export enum OperationType {
   CREATE = 'create',

@@ -1,38 +1,44 @@
 import { MAX_LENGTHS, type PhotoItem } from '../types/kingdom';
 
-export const MAX_VIDEO_RAW_BYTES = 9 * 1024 * 1024;
-export const MAX_AUDIO_RAW_BYTES = 9 * 1024 * 1024;
-const VIDEO_CHUNK_CHAR_SIZE = 650000;
-const AUDIO_CHUNK_CHAR_SIZE = 650000;
+export const MAX_VIDEO_RAW_BYTES = 50 * 1024 * 1024;
+export const MAX_AUDIO_RAW_BYTES = 50 * 1024 * 1024;
 
 export interface CompressedImageResult {
-  dataUrl: string;
+  blob: Blob;
+  previewDataUrl: string;
+  mimeType: string;
   byteLength: number;
   width: number;
   height: number;
 }
 
 export interface ProcessedVideoResult {
-  videoDataUrl: string;
-  posterDataUrl: string;
+  videoFile: File;
+  posterBlob: Blob | null;
+  posterPreviewUrl: string;
   mimeType: string;
   byteLength: number;
-  chunks: string[];
-  inlineVideoData?: string;
 }
 
 export interface ProcessedAudioResult {
-  audioDataUrl: string;
+  audioFile: File;
+  previewObjectUrl: string;
   mimeType: string;
   byteLength: number;
   durationSeconds: number;
-  chunks: string[];
   defaultTitle: string;
 }
 
+export interface UploadedMediaResponse {
+  url: string;
+  filename: string;
+  mimeType: string;
+  byteLength: number;
+}
+
 /**
- * Compresses an uploaded image file onto a canvas and produces a base64 JPEG
- * data URL guaranteed to stay comfortably beneath Firestore's 800KB field limit.
+ * Optimizes an uploaded image file onto a canvas into a JPEG Blob for fast upload
+ * to the Express media server (never stored as base64 in Firestore).
  */
 export async function compressImageFile(file: File): Promise<CompressedImageResult> {
   const objectUrl = URL.createObjectURL(file);
@@ -45,10 +51,10 @@ export async function compressImageFile(file: File): Promise<CompressedImageResu
       el.src = objectUrl;
     });
 
-    const maxDim = 1350;
+    const maxDim = 1800;
     const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
-    let width = Math.max(1, Math.round(img.width * scale));
-    let height = Math.max(1, Math.round(img.height * scale));
+    const width = Math.max(1, Math.round(img.width * scale));
+    const height = Math.max(1, Math.round(img.height * scale));
 
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
@@ -56,38 +62,29 @@ export async function compressImageFile(file: File): Promise<CompressedImageResu
       throw new Error('Canvas 2D context is unavailable in this browser.');
     }
 
-    const qualities = [0.84, 0.72, 0.6, 0.48];
-    let bestDataUrl = '';
+    canvas.width = width;
+    canvas.height = height;
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
 
-    for (let attempt = 0; attempt < qualities.length; attempt++) {
-      canvas.width = width;
-      canvas.height = height;
-      ctx.clearRect(0, 0, width, height);
-      ctx.drawImage(img, 0, 0, width, height);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (result) => {
+          if (result) resolve(result);
+          else reject(new Error('Failed to encode image file.'));
+        },
+        'image/jpeg',
+        0.88
+      );
+    });
 
-      const candidate = canvas.toDataURL('image/jpeg', qualities[attempt]);
-      bestDataUrl = candidate;
-
-      if (candidate.length <= MAX_LENGTHS.imageData - 40000) {
-        return {
-          dataUrl: candidate,
-          byteLength: candidate.length,
-          width,
-          height,
-        };
-      }
-
-      width = Math.max(320, Math.round(width * 0.8));
-      height = Math.max(320, Math.round(height * 0.8));
-    }
-
-    if (bestDataUrl.length > MAX_LENGTHS.imageData) {
-      throw new Error('Compressed image still exceeds storage size limit. Please choose a smaller photo.');
-    }
+    const previewDataUrl = canvas.toDataURL('image/jpeg', 0.72);
 
     return {
-      dataUrl: bestDataUrl,
-      byteLength: bestDataUrl.length,
+      blob,
+      previewDataUrl,
+      mimeType: 'image/jpeg',
+      byteLength: blob.size,
       width,
       height,
     };
@@ -101,7 +98,9 @@ export function generateFallbackVideoPoster(): string {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
-async function captureVideoPoster(objectUrl: string): Promise<string> {
+async function captureVideoPoster(
+  objectUrl: string
+): Promise<{ posterBlob: Blob | null; posterPreviewUrl: string }> {
   return new Promise((resolve) => {
     const video = document.createElement('video');
     video.muted = true;
@@ -109,24 +108,24 @@ async function captureVideoPoster(objectUrl: string): Promise<string> {
     video.preload = 'metadata';
 
     let settled = false;
-    const finish = (poster: string) => {
+    const finish = (result: { posterBlob: Blob | null; posterPreviewUrl: string }) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       video.removeAttribute('src');
       video.load();
-      resolve(poster);
+      resolve(result);
     };
 
     const timer = window.setTimeout(() => {
-      finish(generateFallbackVideoPoster());
+      finish({ posterBlob: null, posterPreviewUrl: generateFallbackVideoPoster() });
     }, 3500);
 
     const captureFrame = () => {
       try {
         const vw = video.videoWidth || 640;
         const vh = video.videoHeight || 360;
-        const scale = Math.min(1, 720 / Math.max(vw, vh));
+        const scale = Math.min(1, 960 / Math.max(vw, vh));
         const width = Math.max(1, Math.round(vw * scale));
         const height = Math.max(1, Math.round(vh * scale));
         const canvas = document.createElement('canvas');
@@ -134,18 +133,23 @@ async function captureVideoPoster(objectUrl: string): Promise<string> {
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         if (!ctx) {
-          finish(generateFallbackVideoPoster());
+          finish({ posterBlob: null, posterPreviewUrl: generateFallbackVideoPoster() });
           return;
         }
         ctx.drawImage(video, 0, 0, width, height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
-        if (dataUrl && dataUrl.length < MAX_LENGTHS.imageData) {
-          finish(dataUrl);
-        } else {
-          finish(generateFallbackVideoPoster());
-        }
+        const preview = canvas.toDataURL('image/jpeg', 0.78);
+        canvas.toBlob(
+          (blob) => {
+            finish({
+              posterBlob: blob,
+              posterPreviewUrl: preview || generateFallbackVideoPoster(),
+            });
+          },
+          'image/jpeg',
+          0.82
+        );
       } catch {
-        finish(generateFallbackVideoPoster());
+        finish({ posterBlob: null, posterPreviewUrl: generateFallbackVideoPoster() });
       }
     };
 
@@ -158,23 +162,9 @@ async function captureVideoPoster(objectUrl: string): Promise<string> {
     };
 
     video.onseeked = () => captureFrame();
-    video.onerror = () => finish(generateFallbackVideoPoster());
+    video.onerror = () =>
+      finish({ posterBlob: null, posterPreviewUrl: generateFallbackVideoPoster() });
     video.src = objectUrl;
-  });
-}
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        resolve(reader.result);
-      } else {
-        reject(new Error('Unable to read the selected video file.'));
-      }
-    };
-    reader.onerror = () => reject(new Error('Failed to read video file from device.'));
-    reader.readAsDataURL(file);
   });
 }
 
@@ -186,51 +176,73 @@ export function isVideoFile(file: File): boolean {
 export async function processVideoFile(file: File): Promise<ProcessedVideoResult> {
   if (file.size > MAX_VIDEO_RAW_BYTES) {
     throw new Error(
-      `Video "${file.name}" is ${formatBytes(file.size)}. Please choose a clip under 9 MB or paste a direct video URL.`
+      `Video "${file.name}" is ${formatBytes(file.size)}. Maximum upload size is 50 MB.`
     );
   }
 
   const objectUrl = URL.createObjectURL(file);
   try {
-    const [posterDataUrl, videoDataUrl] = await Promise.all([
-      captureVideoPoster(objectUrl),
-      readFileAsDataUrl(file),
-    ]);
-
+    const { posterBlob, posterPreviewUrl } = await captureVideoPoster(objectUrl);
     const mimeType = (file.type || 'video/mp4').slice(0, MAX_LENGTHS.mimeType);
 
-    if (videoDataUrl.length <= MAX_LENGTHS.videoData) {
-      return {
-        videoDataUrl,
-        posterDataUrl,
-        mimeType,
-        byteLength: file.size,
-        chunks: [],
-        inlineVideoData: videoDataUrl,
-      };
-    }
-
-    const chunks: string[] = [];
-    for (let offset = 0; offset < videoDataUrl.length; offset += VIDEO_CHUNK_CHAR_SIZE) {
-      chunks.push(videoDataUrl.slice(offset, offset + VIDEO_CHUNK_CHAR_SIZE));
-    }
-
-    if (chunks.length > MAX_LENGTHS.maxVideoChunks) {
-      throw new Error(
-        `Video "${file.name}" exceeds the maximum encoded size. Please use a shorter clip or paste a direct video URL.`
-      );
-    }
-
     return {
-      videoDataUrl,
-      posterDataUrl,
+      videoFile: file,
+      posterBlob,
+      posterPreviewUrl,
       mimeType,
       byteLength: file.size,
-      chunks,
     };
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
+}
+
+export async function uploadMediaToServer(params: {
+  file: Blob;
+  filename: string;
+  contentType: string;
+  kind: 'image' | 'video' | 'audio';
+  idToken: string;
+}): Promise<UploadedMediaResponse> {
+  const res = await fetch('/api/media/upload', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${params.idToken}`,
+      'Content-Type': params.contentType || 'application/octet-stream',
+      'x-file-name': encodeURIComponent(params.filename),
+      'x-media-kind': params.kind,
+    },
+    body: params.file,
+  });
+
+  if (!res.ok) {
+    let errText = `Media upload failed (${res.status})`;
+    try {
+      const data = (await res.json()) as { error?: string };
+      if (data?.error) errText = data.error;
+    } catch {
+      // Ignore parse failure
+    }
+    throw new Error(errText);
+  }
+
+  return (await res.json()) as UploadedMediaResponse;
+}
+
+export async function deleteServerMediaUrl(
+  mediaUrl: string | undefined,
+  idToken: string
+): Promise<void> {
+  if (!mediaUrl || !mediaUrl.startsWith('/media/')) return;
+  const filename = mediaUrl.slice('/media/'.length).split('?')[0];
+  if (!filename || !/^[a-zA-Z0-9._-]+$/.test(filename)) return;
+
+  await fetch(`/api/media/${encodeURIComponent(filename)}`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${idToken}`,
+    },
+  }).catch(() => undefined);
 }
 
 export function isVideoItem(
@@ -301,7 +313,11 @@ export function isAudioFile(file: File): boolean {
 export function isValidAudioUrl(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > MAX_LENGTHS.bgMusicUrl) return false;
-  return trimmed.startsWith('https://') || trimmed.startsWith('http://');
+  return (
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('/')
+  );
 }
 
 function readAudioDurationSeconds(objectUrl: string): Promise<number> {
@@ -332,47 +348,29 @@ export async function processAudioFile(file: File): Promise<ProcessedAudioResult
   }
   if (file.size > MAX_AUDIO_RAW_BYTES) {
     throw new Error(
-      `Audio "${file.name}" is ${formatBytes(file.size)}. Please choose an audio file under 9 MB or paste a direct HTTPS audio URL.`
+      `Audio "${file.name}" is ${formatBytes(file.size)}. Maximum upload size is 50 MB.`
     );
   }
 
-  const objectUrl = URL.createObjectURL(file);
-  try {
-    const [durationSeconds, audioDataUrl] = await Promise.all([
-      readAudioDurationSeconds(objectUrl),
-      readFileAsDataUrl(file),
-    ]);
+  const previewObjectUrl = URL.createObjectURL(file);
+  const durationSeconds = await readAudioDurationSeconds(previewObjectUrl);
+  const mimeType = (file.type || 'audio/mpeg').slice(0, MAX_LENGTHS.bgMusicMimeType);
 
-    const mimeType = (file.type || 'audio/mpeg').slice(0, MAX_LENGTHS.bgMusicMimeType);
-    const chunks: string[] = [];
-    for (let offset = 0; offset < audioDataUrl.length; offset += AUDIO_CHUNK_CHAR_SIZE) {
-      chunks.push(audioDataUrl.slice(offset, offset + AUDIO_CHUNK_CHAR_SIZE));
-    }
+  const defaultTitle =
+    file.name
+      .replace(/\.[^.]+$/, '')
+      .replace(/[_-]+/g, ' ')
+      .trim()
+      .slice(0, MAX_LENGTHS.bgMusicTitle) || 'Our Royal Soundtrack';
 
-    if (chunks.length > MAX_LENGTHS.maxMusicChunks) {
-      throw new Error(
-        `Audio "${file.name}" exceeds the maximum encoded size. Please use a shorter or compressed MP3/M4A file.`
-      );
-    }
-
-    const defaultTitle =
-      file.name
-        .replace(/\.[^.]+$/, '')
-        .replace(/[_-]+/g, ' ')
-        .trim()
-        .slice(0, MAX_LENGTHS.bgMusicTitle) || 'Our Royal Soundtrack';
-
-    return {
-      audioDataUrl,
-      mimeType,
-      byteLength: file.size,
-      durationSeconds,
-      chunks,
-      defaultTitle,
-    };
-  } finally {
-    URL.revokeObjectURL(objectUrl);
-  }
+  return {
+    audioFile: file,
+    previewObjectUrl,
+    mimeType,
+    byteLength: file.size,
+    durationSeconds,
+    defaultTitle,
+  };
 }
 
 export function formatAudioTime(seconds: number): string {

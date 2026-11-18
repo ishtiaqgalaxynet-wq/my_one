@@ -42,6 +42,11 @@ function KingdomApp() {
     deletePhoto,
     grantAdminAccess,
     revokeAdminAccess,
+    getAuthToken,
+    driveConnected,
+    connectingDrive,
+    connectGoogleDrive,
+    getDriveAccessToken,
   } = useKingdomData();
 
   const [route, setRoute] = useState<AppRoute>(() =>
@@ -159,6 +164,11 @@ function KingdomApp() {
           onDeletePhoto={deletePhoto}
           onGrantAdmin={grantAdminAccess}
           onRevokeAdmin={revokeAdminAccess}
+          onGetAuthToken={getAuthToken}
+          driveConnected={driveConnected}
+          connectingDrive={connectingDrive}
+          onConnectGoogleDrive={connectGoogleDrive}
+          onGetDriveAccessToken={getDriveAccessToken}
           onViewSite={() => navigateTo('public')}
           onSignOut={() => {
             void signOut();

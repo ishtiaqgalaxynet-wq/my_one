@@ -204,8 +204,10 @@ service cloud.firestore {
       // Chunked background audio slices gated by parent music enablement
       match /music_chunks/{chunkId} {
         allow get: if isValidId(docId) && docId == 'main' && isValidId(chunkId) && (
-          get(/databases/$(database)/documents/site_content/$(docId)).data.bgMusicEnabled == true ||
-          isAdmin()
+          isAdmin() || (
+            exists(/databases/$(database)/documents/site_content/$(docId)) &&
+            get(/databases/$(database)/documents/site_content/$(docId)).data.bgMusicEnabled == true
+          )
         );
         allow create: if isValidId(docId) && docId == 'main' && isValidId(chunkId) && isAdmin() &&
           exists(/databases/$(database)/documents/site_content/$(docId)) &&
@@ -222,7 +224,7 @@ service cloud.firestore {
 
     // Photo & video slots & extra gallery items
     match /photos/{photoId} {
-      allow get: if isValidId(photoId) && (existing().status == 'published' || isAdmin());
+      allow get: if isValidId(photoId) && (isAdmin() || (resource != null && existing().status == 'published'));
       allow list: if resource.data.status == 'published' || isBootstrapAdmin();
       allow create: if isValidId(photoId) && isAdmin() && isValidPhotoItem(incoming());
       allow update: if isValidId(photoId) && isAdmin() && isValidPhotoItem(incoming()) &&
@@ -238,8 +240,10 @@ service cloud.firestore {
       // Chunked video slices gated by parent photo visibility & existence
       match /chunks/{chunkId} {
         allow get: if isValidId(photoId) && isValidId(chunkId) && (
-          get(/databases/$(database)/documents/photos/$(photoId)).data.status == 'published' ||
-          isAdmin()
+          isAdmin() || (
+            exists(/databases/$(database)/documents/photos/$(photoId)) &&
+            get(/databases/$(database)/documents/photos/$(photoId)).data.status == 'published'
+          )
         );
         allow create: if isValidId(photoId) && isValidId(chunkId) && isAdmin() &&
           exists(/databases/$(database)/documents/photos/$(photoId)) &&

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  GoogleAuthProvider,
   onAuthStateChanged,
   signInWithPopup,
   signOut as firebaseSignOut,
@@ -19,11 +20,16 @@ import {
 } from 'firebase/firestore';
 import {
   auth,
+  clearCachedDriveAccessToken,
   db,
+  getCachedDriveAccessToken,
   googleProvider,
   handleFirestoreError,
   OperationType,
+  requestGoogleDriveAccessToken,
+  setCachedDriveAccessToken,
 } from '../lib/firebase';
+import { deleteServerMediaUrl } from '../lib/imageUtils';
 import {
   type AdminUser,
   DEFAULT_SITE_CONTENT,
@@ -48,6 +54,11 @@ export function useKingdomData() {
   const [adminCheckDone, setAdminCheckDone] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
+  const [driveConnected, setDriveConnected] = useState<boolean>(() => Boolean(getCachedDriveAccessToken()));
+  const [connectingDrive, setConnectingDrive] = useState(false);
+
+  const photosUnsubRef = useRef<(() => void) | null>(null);
+  const adminsUnsubRef = useRef<(() => void) | null>(null);
 
   const [siteContent, setSiteContent] = useState<SiteContent>(DEFAULT_SITE_CONTENT);
   const [contentLoaded, setContentLoaded] = useState(false);
@@ -65,6 +76,8 @@ export function useKingdomData() {
       setAuthReady(true);
 
       if (!nextUser) {
+        clearCachedDriveAccessToken();
+        setDriveConnected(false);
         setIsAdmin(false);
         setIsSuperAdmin(false);
         setAdminCheckDone(true);
@@ -82,6 +95,8 @@ export function useKingdomData() {
         return;
       }
 
+      setIsAdmin(false);
+      setAdminCheckDone(false);
       try {
         const adminDoc = await getDoc(doc(db, 'admins', nextUser.uid));
         setIsAdmin(Boolean(nextUser.emailVerified) && adminDoc.exists());
@@ -120,7 +135,7 @@ export function useKingdomData() {
     );
 
     return () => unsubscribe();
-  }, [authReady, user?.uid]);
+  }, [authReady]);
 
   // 3. Photos listener (public published items; full list for super admin + slot lookups for secondary admins)
   useEffect(() => {
@@ -169,7 +184,13 @@ export function useKingdomData() {
       }
     );
 
-    return () => unsubscribe();
+    photosUnsubRef.current = unsubscribe;
+    return () => {
+      unsubscribe();
+      if (photosUnsubRef.current === unsubscribe) {
+        photosUnsubRef.current = null;
+      }
+    };
   }, [authReady, adminCheckDone, isAdmin, isSuperAdmin]);
 
   // 4. Admins collection listener (super admin only)
@@ -194,7 +215,13 @@ export function useKingdomData() {
       }
     );
 
-    return () => unsubscribe();
+    adminsUnsubRef.current = unsubscribe;
+    return () => {
+      unsubscribe();
+      if (adminsUnsubRef.current === unsubscribe) {
+        adminsUnsubRef.current = null;
+      }
+    };
   }, [isSuperAdmin]);
 
   // Auth actions
@@ -202,7 +229,12 @@ export function useKingdomData() {
     setAuthError(null);
     setSigningIn(true);
     try {
-      await signInWithPopup(auth, googleProvider);
+      const result = await signInWithPopup(auth, googleProvider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        setCachedDriveAccessToken(credential.accessToken);
+        setDriveConnected(true);
+      }
     } catch (err) {
       const code =
         typeof err === 'object' && err !== null && 'code' in err
@@ -223,8 +255,34 @@ export function useKingdomData() {
     }
   }, []);
 
+  const connectGoogleDrive = useCallback(async (): Promise<string> => {
+    setConnectingDrive(true);
+    try {
+      const token = await requestGoogleDriveAccessToken();
+      setDriveConnected(true);
+      return token;
+    } finally {
+      setConnectingDrive(false);
+    }
+  }, []);
+
+  const getDriveAccessToken = useCallback((): string | null => {
+    const token = getCachedDriveAccessToken();
+    setDriveConnected(Boolean(token));
+    return token;
+  }, []);
+
   const signOut = useCallback(async () => {
     setAuthError(null);
+    clearCachedDriveAccessToken();
+    setDriveConnected(false);
+    // Synchronously detach admin-scoped listeners before revoking the Firebase Auth token
+    adminsUnsubRef.current?.();
+    adminsUnsubRef.current = null;
+    photosUnsubRef.current?.();
+    photosUnsubRef.current = null;
+    setIsAdmin(false);
+    setIsSuperAdmin(false);
     await firebaseSignOut(auth);
   }, []);
 
@@ -248,6 +306,13 @@ export function useKingdomData() {
     [user, isAdmin]
   );
 
+  const getAuthToken = useCallback(async (): Promise<string> => {
+    if (!user) {
+      throw new Error('Admin sign-in required.');
+    }
+    return user.getIdToken();
+  }, [user]);
+
   const saveBackgroundMusic = useCallback(
     async (params: {
       enabled: boolean;
@@ -258,25 +323,15 @@ export function useKingdomData() {
       mimeType?: string;
       durationSeconds?: number;
       audioUrl?: string;
-      audioChunks?: string[];
-      keepExistingChunks?: boolean;
     }) => {
       if (!user || !isAdmin) {
         throw new Error('Admin authorization required to update background music.');
       }
 
       const path = 'site_content/main';
+      const prevUrl = (siteContent.bgMusicUrl ?? '').trim();
       const prevChunkCount = siteContent.bgMusicChunkCount ?? 0;
-      const newChunks = params.audioChunks ?? [];
-      const usingNewChunks = newChunks.length > 0;
-      const usingUrl = Boolean(params.audioUrl && params.audioUrl.trim().length > 0);
-      const nextChunkCount = usingNewChunks
-        ? Math.min(MAX_LENGTHS.maxMusicChunks, newChunks.length)
-        : usingUrl
-          ? 0
-          : params.keepExistingChunks
-            ? prevChunkCount
-            : 0;
+      const nextUrl = (params.audioUrl ?? '').trim().slice(0, MAX_LENGTHS.bgMusicUrl);
 
       const nextContent: SiteContent = {
         ...siteContent,
@@ -285,23 +340,17 @@ export function useKingdomData() {
         bgMusicSubtitle: (params.subtitle.trim() || 'Background Music').slice(0, MAX_LENGTHS.bgMusicSubtitle),
         bgMusicAutoPlay: params.autoPlay,
         bgMusicLoop: params.loop,
-        bgMusicUrl: usingUrl ? (params.audioUrl ?? '').trim().slice(0, MAX_LENGTHS.bgMusicUrl) : '',
-        bgMusicMimeType: usingUrl
-          ? 'audio/mpeg'
-          : usingNewChunks
-            ? (params.mimeType ?? 'audio/mpeg').slice(0, MAX_LENGTHS.bgMusicMimeType)
-            : params.keepExistingChunks
-              ? (siteContent.bgMusicMimeType ?? '')
-              : '',
-        bgMusicChunkCount: nextChunkCount,
+        bgMusicUrl: nextUrl,
+        bgMusicMimeType: nextUrl
+          ? (params.mimeType ?? siteContent.bgMusicMimeType ?? 'audio/mpeg').slice(0, MAX_LENGTHS.bgMusicMimeType)
+          : '',
+        bgMusicChunkCount: 0,
         bgMusicDuration:
           typeof params.durationSeconds === 'number'
             ? Math.max(0, Math.min(7200, Math.round(params.durationSeconds)))
-            : usingUrl
-              ? 0
-              : params.keepExistingChunks
-                ? (siteContent.bgMusicDuration ?? 0)
-                : 0,
+            : nextUrl
+              ? (siteContent.bgMusicDuration ?? 0)
+              : 0,
       };
 
       const sanitized = sanitizeSiteContent(nextContent, user.uid);
@@ -312,25 +361,19 @@ export function useKingdomData() {
           updatedAt: serverTimestamp(),
         });
 
-        if (usingNewChunks) {
-          await Promise.all(
-            newChunks.map((chunkStr, idx) =>
-              setDoc(doc(db, 'site_content', 'main', 'music_chunks', String(idx)), {
-                index: idx,
-                data: chunkStr,
-                updatedAt: serverTimestamp(),
-                updatedByUid: user.uid,
-              })
-            )
-          );
+        // Clean up any old server file if replaced or removed
+        if (prevUrl && prevUrl !== nextUrl) {
+          const token = await user.getIdToken();
+          await deleteServerMediaUrl(prevUrl, token);
         }
 
-        if (prevChunkCount > nextChunkCount) {
+        // Clean up any legacy Firestore music chunks
+        if (prevChunkCount > 0) {
           await Promise.all(
-            Array.from({ length: prevChunkCount - nextChunkCount }, (_, offset) =>
-              deleteDoc(
-                doc(db, 'site_content', 'main', 'music_chunks', String(nextChunkCount + offset))
-              ).catch(() => undefined)
+            Array.from({ length: prevChunkCount }, (_, idx) =>
+              deleteDoc(doc(db, 'site_content', 'main', 'music_chunks', String(idx))).catch(
+                () => undefined
+              )
             )
           );
         }
@@ -348,6 +391,12 @@ export function useKingdomData() {
       return null;
     }
 
+    const url = (content.bgMusicUrl ?? '').trim();
+    if (url.length > 0) {
+      return url;
+    }
+
+    // Legacy fallback only for previously chunked tracks
     const totalChunks = content.bgMusicChunkCount ?? 0;
     if (totalChunks > 0) {
       const cacheKey = `main:${totalChunks}:${content.bgMusicTitle ?? ''}:${content.bgMusicDuration ?? 0}`;
@@ -373,11 +422,10 @@ export function useKingdomData() {
       }
     }
 
-    const url = (content.bgMusicUrl ?? '').trim();
-    return url.length > 0 ? url : null;
+    return null;
   }, []);
 
-  // Photo & video slot CRUD (s0..s13 or updating an existing extra item)
+  // Photo & video slot CRUD (stores lightweight /media/* URLs in Firestore, never file blobs)
   const savePhotoSlot = useCallback(
     async (params: {
       photoId: string;
@@ -390,9 +438,7 @@ export function useKingdomData() {
       sortOrder: number;
       mediaType?: MediaType;
       videoData?: string;
-      chunkCount?: number;
       mimeType?: string;
-      videoChunks?: string[];
     }) => {
       if (!user || !isAdmin) {
         throw new Error('Admin authorization required to save media.');
@@ -405,8 +451,6 @@ export function useKingdomData() {
       const imageData = params.imageData.trim().slice(0, MAX_LENGTHS.imageData);
       const mediaType: MediaType = params.mediaType ?? 'image';
       const videoData = (params.videoData ?? '').trim().slice(0, MAX_LENGTHS.videoData);
-      const videoChunks = params.videoChunks ?? [];
-      const chunkCount = Math.max(0, Math.min(MAX_LENGTHS.maxVideoChunks, params.chunkCount ?? videoChunks.length));
       const mimeType = (params.mimeType ?? '').trim().slice(0, MAX_LENGTHS.mimeType);
 
       try {
@@ -419,7 +463,7 @@ export function useKingdomData() {
             sortOrder: Math.max(0, Math.min(10000, Math.round(params.sortOrder))),
             mediaType,
             videoData,
-            chunkCount,
+            chunkCount: 0,
             mimeType,
             updatedAt: serverTimestamp(),
             updatedByUid: user.uid,
@@ -435,39 +479,36 @@ export function useKingdomData() {
             sortOrder: Math.max(0, Math.min(10000, Math.round(params.sortOrder))),
             mediaType,
             videoData,
-            chunkCount,
+            chunkCount: 0,
             mimeType,
             updatedAt: serverTimestamp(),
             updatedByUid: user.uid,
           });
         }
 
-        // Write video chunks after parent document exists
-        if (videoChunks.length > 0) {
-          await Promise.all(
-            videoChunks.map((chunkStr, idx) =>
-              setDoc(doc(db, 'photos', params.photoId, 'chunks', String(idx)), {
-                index: idx,
-                data: chunkStr,
-                updatedAt: serverTimestamp(),
-                updatedByUid: user.uid,
-              })
-            )
-          );
+        // Delete old server media files if replaced
+        if (existingPhoto) {
+          const token = await user.getIdToken();
+          if (existingPhoto.imageData && existingPhoto.imageData !== imageData) {
+            await deleteServerMediaUrl(existingPhoto.imageData, token);
+          }
+          if (existingPhoto.videoData && existingPhoto.videoData !== videoData) {
+            await deleteServerMediaUrl(existingPhoto.videoData, token);
+          }
         }
 
-        // Clean up leftover chunks if replaced by smaller video or image
+        // Clean up any legacy Firestore video chunks
         const prevChunkCount = existingPhoto?.chunkCount ?? 0;
-        if (prevChunkCount > chunkCount) {
+        if (prevChunkCount > 0) {
           await Promise.all(
-            Array.from({ length: prevChunkCount - chunkCount }, (_, offset) =>
-              deleteDoc(doc(db, 'photos', params.photoId, 'chunks', String(chunkCount + offset))).catch(() => undefined)
+            Array.from({ length: prevChunkCount }, (_, idx) =>
+              deleteDoc(doc(db, 'photos', params.photoId, 'chunks', String(idx))).catch(
+                () => undefined
+              )
             )
           );
+          videoSourceCache.delete(`${params.photoId}:${prevChunkCount}`);
         }
-
-        videoSourceCache.delete(`${params.photoId}:${prevChunkCount}`);
-        videoSourceCache.delete(`${params.photoId}:${chunkCount}`);
       } catch (error) {
         handleFirestoreError(error, OperationType.WRITE, path);
       }
@@ -482,9 +523,7 @@ export function useKingdomData() {
       caption: string;
       mediaType?: MediaType;
       videoData?: string;
-      chunkCount?: number;
       mimeType?: string;
-      videoChunks?: string[];
     }) => {
       if (!user || !isAdmin) {
         throw new Error('Admin authorization required to add gallery media.');
@@ -504,9 +543,7 @@ export function useKingdomData() {
         sortOrder: maxOrder + 1,
         mediaType: params.mediaType,
         videoData: params.videoData,
-        chunkCount: params.chunkCount,
         mimeType: params.mimeType,
-        videoChunks: params.videoChunks,
       });
     },
     [user, isAdmin, photos, savePhotoSlot]
@@ -520,9 +557,7 @@ export function useKingdomData() {
         caption: string;
         mediaType?: MediaType;
         videoData?: string;
-        chunkCount?: number;
         mimeType?: string;
-        videoChunks?: string[];
       }>,
       onProgress?: (completed: number, total: number) => void
     ) => {
@@ -545,9 +580,7 @@ export function useKingdomData() {
           sortOrder: baseOrder + 1 + i,
           mediaType: item.mediaType,
           videoData: item.videoData,
-          chunkCount: item.chunkCount,
           mimeType: item.mimeType,
-          videoChunks: item.videoChunks,
         });
         onProgress?.(i + 1, items.length);
       }
@@ -579,7 +612,7 @@ export function useKingdomData() {
         .map((snap) => (snap.exists() ? String((snap.data() as { data?: string }).data ?? '') : ''))
         .join('');
       if (!combined) {
-        throw new Error('Video chunks are missing or unavailable.');
+        throw new Error('Video source is missing or unavailable.');
       }
       videoSourceCache.set(cacheKey, combined);
       return combined;
@@ -613,6 +646,11 @@ export function useKingdomData() {
       const existingPhoto = photos.find((p) => p.id === photoId);
       const totalChunks = existingPhoto?.chunkCount ?? 0;
       try {
+        if (existingPhoto) {
+          const token = await user.getIdToken();
+          await deleteServerMediaUrl(existingPhoto.imageData, token);
+          await deleteServerMediaUrl(existingPhoto.videoData, token);
+        }
         if (totalChunks > 0) {
           await Promise.all(
             Array.from({ length: totalChunks }, (_, idx) =>
@@ -695,5 +733,10 @@ export function useKingdomData() {
     deletePhoto,
     grantAdminAccess,
     revokeAdminAccess,
+    getAuthToken,
+    driveConnected,
+    connectingDrive,
+    connectGoogleDrive,
+    getDriveAccessToken,
   };
 }
