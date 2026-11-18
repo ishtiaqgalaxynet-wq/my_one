@@ -32,6 +32,8 @@ function KingdomApp() {
     photosLoaded,
     admins,
     saveSiteContent,
+    saveBackgroundMusic,
+    loadBackgroundMusicSource,
     savePhotoSlot,
     addExtraPhoto,
     addExtraMediaBatch,
@@ -148,6 +150,8 @@ function KingdomApp() {
           photos={photos}
           admins={admins}
           onSaveSiteContent={saveSiteContent}
+          onSaveBackgroundMusic={saveBackgroundMusic}
+          onLoadBackgroundMusic={loadBackgroundMusicSource}
           onSavePhotoSlot={savePhotoSlot}
           onAddExtraPhoto={addExtraPhoto}
           onAddExtraMediaBatch={addExtraMediaBatch}
@@ -192,6 +196,7 @@ function KingdomApp() {
         isAdmin={isAdmin}
         onOpenAdmin={() => navigateTo('admin')}
         onLoadVideoSource={loadVideoSource}
+        onLoadBackgroundMusic={loadBackgroundMusicSource}
       />
     );
   })();

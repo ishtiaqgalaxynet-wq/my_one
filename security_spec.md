@@ -7,7 +7,7 @@
 4. **Temporal & Author Integrity**: `updatedAt` (and `createdAt` on `/admins`) must equal `request.time`, and `updatedByUid` / `createdByUid` must equal `request.auth.uid`.
 5. **PII Isolation**: `/admins/{adminUid}` contains email addresses and is readable only by the matching user (`request.auth.uid == adminUid`) or an active admin; `allow list` on `/admins` is restricted solely to the bootstrap owner (`isBootstrapAdmin()`).
 6. **Path ID Hardening**: All single-document operations enforce `isValidId()` (`^[a-zA-Z0-9_-]+$`, max 128 chars).
-7. **Media Chunk Master Gate**: `/photos/{photoId}/chunks/{chunkId}` requires parent `/photos/{photoId}` existence for writes, enforces `<= 700,000` chars per chunk, disables collection-wide `list`, and gates `get` on parent `status == 'published'` or `isAdmin()`.
+7. **Media & Music Chunk Master Gate**: `/photos/{photoId}/chunks/{chunkId}` and `/site_content/{docId}/music_chunks/{chunkId}` require parent document existence for writes, enforce `<= 700,000` chars per chunk, disable collection-wide `list`, and gate `get` on parent publication (`status == 'published'` or `bgMusicEnabled == true`) or `isAdmin()`.
 
 ## 2. The "Dirty Dozen" Adversarial Payloads
 1. **Unauthenticated `site_content` write**: `setDoc('/site_content/main', {...})` with `auth = null` -> `PERMISSION_DENIED`.

@@ -37,7 +37,7 @@ service cloud.firestore {
     }
 
     // ---- Entity Validation Helpers ----
-    function isValidSiteContent(data) {
+    function isValidSiteContentKeys(data) {
       return data.keys().hasAll([
         'displayName', 'accountSubtitle', 'instagramHandle', 'tiktokHandle',
         'bioTitle', 'bioText', 'friendsLabel', 'memoriesCount', 'memoriesLabel',
@@ -54,9 +54,16 @@ service cloud.firestore {
         'hugButtonText', 'shareButtonText', 'tiktokHugs', 'tiktokSmiles',
         'tiktokLikes', 'pinnedSubtitle', 'pinnedCaption', 'letterTitle',
         'letterBody', 'letterSignoff', 'finaleTitle', 'finaleButtonText',
-        'songLabel', 'songUrl', 'defaultTheme', 'updatedAt', 'updatedByUid'
-      ]) &&
-      data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
+        'songLabel', 'songUrl', 'defaultTheme',
+        'bgMusicEnabled', 'bgMusicTitle', 'bgMusicSubtitle', 'bgMusicUrl',
+        'bgMusicMimeType', 'bgMusicChunkCount', 'bgMusicAutoPlay',
+        'bgMusicLoop', 'bgMusicDuration',
+        'updatedAt', 'updatedByUid'
+      ]);
+    }
+
+    function isValidSiteContentProfile(data) {
+      return data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
       data.accountSubtitle is string && data.accountSubtitle.size() >= 1 && data.accountSubtitle.size() <= 60 &&
       data.instagramHandle is string && data.instagramHandle.size() >= 1 && data.instagramHandle.size() <= 60 &&
       data.tiktokHandle is string && data.tiktokHandle.size() >= 1 && data.tiktokHandle.size() <= 60 &&
@@ -68,8 +75,11 @@ service cloud.firestore {
       data.followerCount is string && data.followerCount.size() >= 1 && data.followerCount.size() <= 24 &&
       data.followerLabel is string && data.followerLabel.size() >= 1 && data.followerLabel.size() <= 40 &&
       data.followingCount is string && data.followingCount.size() >= 1 && data.followingCount.size() <= 24 &&
-      data.followingLabel is string && data.followingLabel.size() >= 1 && data.followingLabel.size() <= 40 &&
-      data.hugButtonText is string && data.hugButtonText.size() >= 1 && data.hugButtonText.size() <= 32 &&
+      data.followingLabel is string && data.followingLabel.size() >= 1 && data.followingLabel.size() <= 40;
+    }
+
+    function isValidSiteContentCopy(data) {
+      return data.hugButtonText is string && data.hugButtonText.size() >= 1 && data.hugButtonText.size() <= 32 &&
       data.shareButtonText is string && data.shareButtonText.size() >= 1 && data.shareButtonText.size() <= 32 &&
       data.tiktokHugs is string && data.tiktokHugs.size() >= 1 && data.tiktokHugs.size() <= 24 &&
       data.tiktokSmiles is string && data.tiktokSmiles.size() >= 1 && data.tiktokSmiles.size() <= 24 &&
@@ -83,10 +93,29 @@ service cloud.firestore {
       data.finaleButtonText is string && data.finaleButtonText.size() >= 1 && data.finaleButtonText.size() <= 40 &&
       data.songLabel is string && data.songLabel.size() >= 1 && data.songLabel.size() <= 60 &&
       data.songUrl is string && data.songUrl.size() >= 1 && data.songUrl.size() <= 300 &&
-      data.defaultTheme in ['dark', 'light'] &&
+      data.defaultTheme in ['dark', 'light'];
+    }
+
+    function isValidSiteContentMusic(data) {
+      return (!('bgMusicEnabled' in data) || data.bgMusicEnabled is bool) &&
+      (!('bgMusicTitle' in data) || (data.bgMusicTitle is string && data.bgMusicTitle.size() <= 80)) &&
+      (!('bgMusicSubtitle' in data) || (data.bgMusicSubtitle is string && data.bgMusicSubtitle.size() <= 80)) &&
+      (!('bgMusicUrl' in data) || (data.bgMusicUrl is string && data.bgMusicUrl.size() <= 500)) &&
+      (!('bgMusicMimeType' in data) || (data.bgMusicMimeType is string && data.bgMusicMimeType.size() <= 80)) &&
+      (!('bgMusicChunkCount' in data) || (data.bgMusicChunkCount is int && data.bgMusicChunkCount >= 0 && data.bgMusicChunkCount <= 20)) &&
+      (!('bgMusicAutoPlay' in data) || data.bgMusicAutoPlay is bool) &&
+      (!('bgMusicLoop' in data) || data.bgMusicLoop is bool) &&
+      (!('bgMusicDuration' in data) || (data.bgMusicDuration is int && data.bgMusicDuration >= 0 && data.bgMusicDuration <= 7200)) &&
       data.updatedAt == request.time &&
       data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
       data.updatedByUid == request.auth.uid;
+    }
+
+    function isValidSiteContent(data) {
+      return isValidSiteContentKeys(data) &&
+      isValidSiteContentProfile(data) &&
+      isValidSiteContentCopy(data) &&
+      isValidSiteContentMusic(data);
     }
 
     function isValidPhotoItem(data) {
@@ -164,9 +193,31 @@ service cloud.firestore {
           'hugButtonText', 'shareButtonText', 'tiktokHugs', 'tiktokSmiles',
           'tiktokLikes', 'pinnedSubtitle', 'pinnedCaption', 'letterTitle',
           'letterBody', 'letterSignoff', 'finaleTitle', 'finaleButtonText',
-          'songLabel', 'songUrl', 'defaultTheme', 'updatedAt', 'updatedByUid'
+          'songLabel', 'songUrl', 'defaultTheme',
+          'bgMusicEnabled', 'bgMusicTitle', 'bgMusicSubtitle', 'bgMusicUrl',
+          'bgMusicMimeType', 'bgMusicChunkCount', 'bgMusicAutoPlay',
+          'bgMusicLoop', 'bgMusicDuration',
+          'updatedAt', 'updatedByUid'
         ]);
       allow delete: if isValidId(docId) && isBootstrapAdmin();
+
+      // Chunked background audio slices gated by parent music enablement
+      match /music_chunks/{chunkId} {
+        allow get: if isValidId(docId) && docId == 'main' && isValidId(chunkId) && (
+          get(/databases/$(database)/documents/site_content/$(docId)).data.bgMusicEnabled == true ||
+          isAdmin()
+        );
+        allow create: if isValidId(docId) && docId == 'main' && isValidId(chunkId) && isAdmin() &&
+          exists(/databases/$(database)/documents/site_content/$(docId)) &&
+          isValidMediaChunk(incoming());
+        allow update: if isValidId(docId) && docId == 'main' && isValidId(chunkId) && isAdmin() &&
+          exists(/databases/$(database)/documents/site_content/$(docId)) &&
+          isValidMediaChunk(incoming()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'index', 'data', 'updatedAt', 'updatedByUid'
+          ]);
+        allow delete: if isValidId(docId) && docId == 'main' && isValidId(chunkId) && isAdmin();
+      }
     }
 
     // Photo & video slots & extra gallery items

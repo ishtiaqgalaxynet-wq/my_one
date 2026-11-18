@@ -35,6 +35,11 @@ export const MAX_LENGTHS = {
   chunkData: 700000,
   maxVideoChunks: 20,
   mimeType: 80,
+  bgMusicTitle: 80,
+  bgMusicSubtitle: 80,
+  bgMusicUrl: 500,
+  bgMusicMimeType: 80,
+  maxMusicChunks: 20,
   caption: 200,
   email: 160,
   adminDisplayName: 80,
@@ -73,6 +78,15 @@ export interface SiteContent {
   songLabel: string;
   songUrl: string;
   defaultTheme: ThemeMode;
+  bgMusicEnabled?: boolean;
+  bgMusicTitle?: string;
+  bgMusicSubtitle?: string;
+  bgMusicUrl?: string;
+  bgMusicMimeType?: string;
+  bgMusicChunkCount?: number;
+  bgMusicAutoPlay?: boolean;
+  bgMusicLoop?: boolean;
+  bgMusicDuration?: number;
   updatedAt?: unknown;
   updatedByUid?: string;
 }
@@ -260,6 +274,15 @@ export const DEFAULT_SITE_CONTENT: SiteContent = {
   songLabel: '🎵 Play our song',
   songUrl: 'https://youtu.be/blQLxdHb-MY',
   defaultTheme: 'dark',
+  bgMusicEnabled: false,
+  bgMusicTitle: 'Our Royal Soundtrack',
+  bgMusicSubtitle: 'Background Music',
+  bgMusicUrl: '',
+  bgMusicMimeType: '',
+  bgMusicChunkCount: 0,
+  bgMusicAutoPlay: true,
+  bgMusicLoop: true,
+  bgMusicDuration: 0,
 };
 
 export function sanitizeSiteContent(raw: SiteContent, uid: string): Omit<SiteContent, 'updatedAt'> & { updatedByUid: string } {
@@ -298,6 +321,15 @@ export function sanitizeSiteContent(raw: SiteContent, uid: string): Omit<SiteCon
     songLabel: clamp(raw.songLabel, DEFAULT_SITE_CONTENT.songLabel, MAX_LENGTHS.songLabel),
     songUrl: clamp(raw.songUrl, DEFAULT_SITE_CONTENT.songUrl, MAX_LENGTHS.songUrl),
     defaultTheme: raw.defaultTheme === 'light' ? 'light' : 'dark',
+    bgMusicEnabled: Boolean(raw.bgMusicEnabled),
+    bgMusicTitle: (raw.bgMusicTitle ?? DEFAULT_SITE_CONTENT.bgMusicTitle ?? 'Our Royal Soundtrack').trim().slice(0, MAX_LENGTHS.bgMusicTitle),
+    bgMusicSubtitle: (raw.bgMusicSubtitle ?? DEFAULT_SITE_CONTENT.bgMusicSubtitle ?? 'Background Music').trim().slice(0, MAX_LENGTHS.bgMusicSubtitle),
+    bgMusicUrl: (raw.bgMusicUrl ?? '').trim().slice(0, MAX_LENGTHS.bgMusicUrl),
+    bgMusicMimeType: (raw.bgMusicMimeType ?? '').trim().slice(0, MAX_LENGTHS.bgMusicMimeType),
+    bgMusicChunkCount: Math.max(0, Math.min(MAX_LENGTHS.maxMusicChunks, Math.round(raw.bgMusicChunkCount ?? 0))),
+    bgMusicAutoPlay: raw.bgMusicAutoPlay === undefined ? true : Boolean(raw.bgMusicAutoPlay),
+    bgMusicLoop: raw.bgMusicLoop === undefined ? true : Boolean(raw.bgMusicLoop),
+    bgMusicDuration: Math.max(0, Math.min(7200, Math.round(raw.bgMusicDuration ?? 0))),
     updatedByUid: uid.slice(0, 128),
   };
 }

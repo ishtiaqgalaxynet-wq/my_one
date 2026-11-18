@@ -38,6 +38,7 @@ import {
 } from '../types/kingdom';
 
 const videoSourceCache = new Map<string, string>();
+const musicSourceCache = new Map<string, string>();
 
 export function useKingdomData() {
   const [user, setUser] = useState<User | null>(null);
@@ -246,6 +247,135 @@ export function useKingdomData() {
     },
     [user, isAdmin]
   );
+
+  const saveBackgroundMusic = useCallback(
+    async (params: {
+      enabled: boolean;
+      title: string;
+      subtitle: string;
+      autoPlay: boolean;
+      loop: boolean;
+      mimeType?: string;
+      durationSeconds?: number;
+      audioUrl?: string;
+      audioChunks?: string[];
+      keepExistingChunks?: boolean;
+    }) => {
+      if (!user || !isAdmin) {
+        throw new Error('Admin authorization required to update background music.');
+      }
+
+      const path = 'site_content/main';
+      const prevChunkCount = siteContent.bgMusicChunkCount ?? 0;
+      const newChunks = params.audioChunks ?? [];
+      const usingNewChunks = newChunks.length > 0;
+      const usingUrl = Boolean(params.audioUrl && params.audioUrl.trim().length > 0);
+      const nextChunkCount = usingNewChunks
+        ? Math.min(MAX_LENGTHS.maxMusicChunks, newChunks.length)
+        : usingUrl
+          ? 0
+          : params.keepExistingChunks
+            ? prevChunkCount
+            : 0;
+
+      const nextContent: SiteContent = {
+        ...siteContent,
+        bgMusicEnabled: params.enabled,
+        bgMusicTitle: (params.title.trim() || 'Our Royal Soundtrack').slice(0, MAX_LENGTHS.bgMusicTitle),
+        bgMusicSubtitle: (params.subtitle.trim() || 'Background Music').slice(0, MAX_LENGTHS.bgMusicSubtitle),
+        bgMusicAutoPlay: params.autoPlay,
+        bgMusicLoop: params.loop,
+        bgMusicUrl: usingUrl ? (params.audioUrl ?? '').trim().slice(0, MAX_LENGTHS.bgMusicUrl) : '',
+        bgMusicMimeType: usingUrl
+          ? 'audio/mpeg'
+          : usingNewChunks
+            ? (params.mimeType ?? 'audio/mpeg').slice(0, MAX_LENGTHS.bgMusicMimeType)
+            : params.keepExistingChunks
+              ? (siteContent.bgMusicMimeType ?? '')
+              : '',
+        bgMusicChunkCount: nextChunkCount,
+        bgMusicDuration:
+          typeof params.durationSeconds === 'number'
+            ? Math.max(0, Math.min(7200, Math.round(params.durationSeconds)))
+            : usingUrl
+              ? 0
+              : params.keepExistingChunks
+                ? (siteContent.bgMusicDuration ?? 0)
+                : 0,
+      };
+
+      const sanitized = sanitizeSiteContent(nextContent, user.uid);
+
+      try {
+        await setDoc(doc(db, 'site_content', 'main'), {
+          ...sanitized,
+          updatedAt: serverTimestamp(),
+        });
+
+        if (usingNewChunks) {
+          await Promise.all(
+            newChunks.map((chunkStr, idx) =>
+              setDoc(doc(db, 'site_content', 'main', 'music_chunks', String(idx)), {
+                index: idx,
+                data: chunkStr,
+                updatedAt: serverTimestamp(),
+                updatedByUid: user.uid,
+              })
+            )
+          );
+        }
+
+        if (prevChunkCount > nextChunkCount) {
+          await Promise.all(
+            Array.from({ length: prevChunkCount - nextChunkCount }, (_, offset) =>
+              deleteDoc(
+                doc(db, 'site_content', 'main', 'music_chunks', String(nextChunkCount + offset))
+              ).catch(() => undefined)
+            )
+          );
+        }
+
+        musicSourceCache.clear();
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, path);
+      }
+    },
+    [user, isAdmin, siteContent]
+  );
+
+  const loadBackgroundMusicSource = useCallback(async (content: SiteContent): Promise<string | null> => {
+    if (!content.bgMusicEnabled) {
+      return null;
+    }
+
+    const totalChunks = content.bgMusicChunkCount ?? 0;
+    if (totalChunks > 0) {
+      const cacheKey = `main:${totalChunks}:${content.bgMusicTitle ?? ''}:${content.bgMusicDuration ?? 0}`;
+      const cached = musicSourceCache.get(cacheKey);
+      if (cached) return cached;
+
+      try {
+        const snaps = await Promise.all(
+          Array.from({ length: totalChunks }, (_, idx) =>
+            getDoc(doc(db, 'site_content', 'main', 'music_chunks', String(idx)))
+          )
+        );
+        const combined = snaps
+          .map((snap) => (snap.exists() ? String((snap.data() as { data?: string }).data ?? '') : ''))
+          .join('');
+        if (!combined) {
+          return null;
+        }
+        musicSourceCache.set(cacheKey, combined);
+        return combined;
+      } catch (error) {
+        handleFirestoreError(error, OperationType.GET, 'site_content/main/music_chunks');
+      }
+    }
+
+    const url = (content.bgMusicUrl ?? '').trim();
+    return url.length > 0 ? url : null;
+  }, []);
 
   // Photo & video slot CRUD (s0..s13 or updating an existing extra item)
   const savePhotoSlot = useCallback(
@@ -555,6 +685,8 @@ export function useKingdomData() {
     photosLoaded,
     admins,
     saveSiteContent,
+    saveBackgroundMusic,
+    loadBackgroundMusicSource,
     savePhotoSlot,
     addExtraPhoto,
     addExtraMediaBatch,

@@ -1,7 +1,9 @@
 import { MAX_LENGTHS, type PhotoItem } from '../types/kingdom';
 
 export const MAX_VIDEO_RAW_BYTES = 9 * 1024 * 1024;
+export const MAX_AUDIO_RAW_BYTES = 9 * 1024 * 1024;
 const VIDEO_CHUNK_CHAR_SIZE = 650000;
+const AUDIO_CHUNK_CHAR_SIZE = 650000;
 
 export interface CompressedImageResult {
   dataUrl: string;
@@ -17,6 +19,15 @@ export interface ProcessedVideoResult {
   byteLength: number;
   chunks: string[];
   inlineVideoData?: string;
+}
+
+export interface ProcessedAudioResult {
+  audioDataUrl: string;
+  mimeType: string;
+  byteLength: number;
+  durationSeconds: number;
+  chunks: string[];
+  defaultTitle: string;
 }
 
 /**
@@ -256,7 +267,7 @@ export function getYouTubeEmbedUrl(url: string): string | null {
       }
     }
     if (!videoId || !/^[a-zA-Z0-9_-]{6,20}$/.test(videoId)) return null;
-    return `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0`;
+    return `https://www.youtube.com/embed/${videoId}?autoplay=1&loop=1&playlist=${videoId}&rel=0`;
   } catch {
     return null;
   }
@@ -280,4 +291,94 @@ export function formatBytes(bytes: number): string {
   }
   const kb = Math.max(1, Math.round(bytes / 1024));
   return `${kb} KB`;
+}
+
+export function isAudioFile(file: File): boolean {
+  if (file.type.startsWith('audio/')) return true;
+  return /\.(mp3|m4a|aac|wav|ogg|oga|opus|flac|weba|webm)$/i.test(file.name);
+}
+
+export function isValidAudioUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_LENGTHS.bgMusicUrl) return false;
+  return trimmed.startsWith('https://') || trimmed.startsWith('http://');
+}
+
+function readAudioDurationSeconds(objectUrl: string): Promise<number> {
+  return new Promise((resolve) => {
+    const audio = document.createElement('audio');
+    audio.preload = 'metadata';
+
+    let settled = false;
+    const finish = (secs: number) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      audio.removeAttribute('src');
+      audio.load();
+      resolve(Number.isFinite(secs) && secs > 0 ? Math.min(7200, Math.round(secs)) : 0);
+    };
+
+    const timer = window.setTimeout(() => finish(0), 3000);
+    audio.onloadedmetadata = () => finish(audio.duration);
+    audio.onerror = () => finish(0);
+    audio.src = objectUrl;
+  });
+}
+
+export async function processAudioFile(file: File): Promise<ProcessedAudioResult> {
+  if (!isAudioFile(file)) {
+    throw new Error(`"${file.name}" does not appear to be a supported audio file.`);
+  }
+  if (file.size > MAX_AUDIO_RAW_BYTES) {
+    throw new Error(
+      `Audio "${file.name}" is ${formatBytes(file.size)}. Please choose an audio file under 9 MB or paste a direct HTTPS audio URL.`
+    );
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const [durationSeconds, audioDataUrl] = await Promise.all([
+      readAudioDurationSeconds(objectUrl),
+      readFileAsDataUrl(file),
+    ]);
+
+    const mimeType = (file.type || 'audio/mpeg').slice(0, MAX_LENGTHS.bgMusicMimeType);
+    const chunks: string[] = [];
+    for (let offset = 0; offset < audioDataUrl.length; offset += AUDIO_CHUNK_CHAR_SIZE) {
+      chunks.push(audioDataUrl.slice(offset, offset + AUDIO_CHUNK_CHAR_SIZE));
+    }
+
+    if (chunks.length > MAX_LENGTHS.maxMusicChunks) {
+      throw new Error(
+        `Audio "${file.name}" exceeds the maximum encoded size. Please use a shorter or compressed MP3/M4A file.`
+      );
+    }
+
+    const defaultTitle =
+      file.name
+        .replace(/\.[^.]+$/, '')
+        .replace(/[_-]+/g, ' ')
+        .trim()
+        .slice(0, MAX_LENGTHS.bgMusicTitle) || 'Our Royal Soundtrack';
+
+    return {
+      audioDataUrl,
+      mimeType,
+      byteLength: file.size,
+      durationSeconds,
+      chunks,
+      defaultTitle,
+    };
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+export function formatAudioTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00';
+  const total = Math.floor(seconds);
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
 }

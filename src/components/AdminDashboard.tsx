@@ -12,6 +12,7 @@ import {
   LayoutDashboard,
   Link as LinkIcon,
   LogOut,
+  Music,
   Play,
   Plus,
   RotateCcw,
@@ -25,13 +26,18 @@ import {
 } from 'lucide-react';
 import {
   compressImageFile,
+  formatAudioTime,
   formatBytes,
   generateFallbackVideoPoster,
   getYouTubeEmbedUrl,
+  isAudioFile,
   isDirectVideoUrl,
+  isValidAudioUrl,
   isValidImageInput,
   isVideoFile,
   isVideoItem,
+  processAudioFile,
+  type ProcessedAudioResult,
   processVideoFile,
 } from '../lib/imageUtils';
 import {
@@ -45,7 +51,7 @@ import {
   type SlotDefinition,
 } from '../types/kingdom';
 
-type DashboardTab = 'overview' | 'photos' | 'text' | 'access';
+type DashboardTab = 'overview' | 'photos' | 'music' | 'text' | 'access';
 type PhotoFilter = 'all' | 'hero' | 'social' | 'collage' | 'extra';
 
 interface QueuedMediaItem {
@@ -69,6 +75,19 @@ interface AdminDashboardProps {
   photos: PhotoItem[];
   admins: AdminUser[];
   onSaveSiteContent: (content: SiteContent) => Promise<void>;
+  onSaveBackgroundMusic: (params: {
+    enabled: boolean;
+    title: string;
+    subtitle: string;
+    autoPlay: boolean;
+    loop: boolean;
+    mimeType?: string;
+    durationSeconds?: number;
+    audioUrl?: string;
+    audioChunks?: string[];
+    keepExistingChunks?: boolean;
+  }) => Promise<void>;
+  onLoadBackgroundMusic: (content: SiteContent) => Promise<string | null>;
   onSavePhotoSlot: (params: {
     photoId: string;
     slotKey: string;
@@ -123,6 +142,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   photos,
   admins,
   onSaveSiteContent,
+  onSaveBackgroundMusic,
+  onLoadBackgroundMusic,
   onSavePhotoSlot,
   onAddExtraPhoto,
   onAddExtraMediaBatch,
@@ -175,6 +196,44 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [adminEmailInput, setAdminEmailInput] = useState('');
   const [adminNameInput, setAdminNameInput] = useState('');
   const [grantingAdmin, setGrantingAdmin] = useState(false);
+
+  // Background music manager state
+  const [musicEnabled, setMusicEnabled] = useState<boolean>(Boolean(siteContent.bgMusicEnabled));
+  const [musicTitle, setMusicTitle] = useState<string>(
+    siteContent.bgMusicTitle || 'Our Royal Soundtrack'
+  );
+  const [musicSubtitle, setMusicSubtitle] = useState<string>(
+    siteContent.bgMusicSubtitle || 'Background Music'
+  );
+  const [musicAutoPlay, setMusicAutoPlay] = useState<boolean>(
+    siteContent.bgMusicAutoPlay ?? true
+  );
+  const [musicLoop, setMusicLoop] = useState<boolean>(siteContent.bgMusicLoop ?? true);
+  const [musicUrlInput, setMusicUrlInput] = useState<string>(siteContent.bgMusicUrl || '');
+  const [pendingAudio, setPendingAudio] = useState<ProcessedAudioResult | null>(null);
+  const [savedAudioPreviewSrc, setSavedAudioPreviewSrc] = useState<string | null>(null);
+  const [processingAudio, setProcessingAudio] = useState(false);
+  const [savingMusic, setSavingMusic] = useState(false);
+
+  useEffect(() => {
+    setMusicEnabled(Boolean(siteContent.bgMusicEnabled));
+    setMusicTitle(siteContent.bgMusicTitle || 'Our Royal Soundtrack');
+    setMusicSubtitle(siteContent.bgMusicSubtitle || 'Background Music');
+    setMusicAutoPlay(siteContent.bgMusicAutoPlay ?? true);
+    setMusicLoop(siteContent.bgMusicLoop ?? true);
+    setMusicUrlInput(siteContent.bgMusicUrl || '');
+  }, [siteContent]);
+
+  useEffect(() => {
+    if (activeTab !== 'music') return;
+    if ((siteContent.bgMusicChunkCount ?? 0) > 0 || (siteContent.bgMusicUrl ?? '').trim()) {
+      void onLoadBackgroundMusic({ ...siteContent, bgMusicEnabled: true })
+        .then((src) => setSavedAudioPreviewSrc(src))
+        .catch(() => setSavedAudioPreviewSrc(null));
+    } else {
+      setSavedAudioPreviewSrc(null);
+    }
+  }, [activeTab, siteContent, onLoadBackgroundMusic]);
 
   const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -551,9 +610,98 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     );
   }, [photoFilter, photoSearch, extraPhotos]);
 
+  const handleMusicFileSelect = async (file: File) => {
+    if (!isAudioFile(file)) {
+      notify('error', 'Please choose an audio file (MP3, M4A, WAV, OGG, or AAC).');
+      return;
+    }
+    setProcessingAudio(true);
+    try {
+      const processed = await processAudioFile(file);
+      setPendingAudio(processed);
+      setMusicUrlInput('');
+      setMusicEnabled(true);
+      if (!musicTitle.trim() || musicTitle.trim() === 'Our Royal Soundtrack') {
+        setMusicTitle(processed.defaultTitle);
+      }
+      notify('success', `Audio loaded (${formatBytes(processed.byteLength)}). Click Save & Publish Music to apply.`);
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Unable to read the selected audio file.');
+    } finally {
+      setProcessingAudio(false);
+    }
+  };
+
+  const handleSaveMusicSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedUrl = musicUrlInput.trim();
+    const hasExistingChunks = (siteContent.bgMusicChunkCount ?? 0) > 0;
+
+    if (!pendingAudio && trimmedUrl && !isValidAudioUrl(trimmedUrl)) {
+      notify('error', 'Please enter a valid HTTPS audio URL.');
+      return;
+    }
+
+    if (musicEnabled && !pendingAudio && !trimmedUrl && !hasExistingChunks) {
+      notify('error', 'Please upload an audio file or paste an audio URL before enabling.');
+      return;
+    }
+
+    setSavingMusic(true);
+    try {
+      await onSaveBackgroundMusic({
+        enabled: musicEnabled,
+        title: musicTitle,
+        subtitle: musicSubtitle,
+        autoPlay: musicAutoPlay,
+        loop: musicLoop,
+        mimeType: pendingAudio?.mimeType,
+        durationSeconds: pendingAudio?.durationSeconds,
+        audioUrl: pendingAudio ? '' : trimmedUrl,
+        audioChunks: pendingAudio?.chunks,
+        keepExistingChunks: !pendingAudio && !trimmedUrl && hasExistingChunks,
+      });
+      if (pendingAudio) {
+        setSavedAudioPreviewSrc(pendingAudio.audioDataUrl);
+        setPendingAudio(null);
+      }
+      notify('success', 'Background music settings saved and published.');
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to save background music.');
+    } finally {
+      setSavingMusic(false);
+    }
+  };
+
+  const handleRemoveMusicTrack = async () => {
+    setSavingMusic(true);
+    try {
+      await onSaveBackgroundMusic({
+        enabled: false,
+        title: 'Our Royal Soundtrack',
+        subtitle: 'Background Music',
+        autoPlay: musicAutoPlay,
+        loop: musicLoop,
+        audioUrl: '',
+        audioChunks: [],
+        keepExistingChunks: false,
+      });
+      setPendingAudio(null);
+      setSavedAudioPreviewSrc(null);
+      setMusicUrlInput('');
+      setMusicEnabled(false);
+      notify('success', 'Uploaded background music track removed.');
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to remove background music.');
+    } finally {
+      setSavingMusic(false);
+    }
+  };
+
   const tabLabel: Record<DashboardTab, string> = {
     overview: 'Overview',
     photos: 'Photo & Video Manager',
+    music: 'Background Music',
     text: 'Text & Copy Editor',
     access: 'Admin Access',
   };
@@ -617,6 +765,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             [
               { id: 'overview', label: 'Overview', icon: LayoutDashboard },
               { id: 'photos', label: 'Photos & Videos', icon: ImageIcon },
+              { id: 'music', label: 'Background Music', icon: Music },
               { id: 'text', label: 'Text & Copy', icon: FileText },
               { id: 'access', label: 'Admin Access', icon: Shield },
             ] as const
@@ -700,6 +849,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             [
               { id: 'overview', label: 'Overview' },
               { id: 'photos', label: 'Photos' },
+              { id: 'music', label: 'Music' },
               { id: 'text', label: 'Text Editor' },
               { id: 'access', label: 'Access' },
             ] as const
@@ -804,6 +954,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   >
                     <Plus className="w-4 h-4" />
                     <span>Add Photos / Videos</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('music')}
+                    className="min-h-[40px] inline-flex items-center gap-2 rounded-lg border border-slate-700 hover:bg-slate-800 text-slate-200 px-4 py-2 text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    <Music className="w-4 h-4 text-[#c19ee0]" />
+                    <span>Background Music</span>
                   </button>
                   <button
                     type="button"
@@ -1340,6 +1498,225 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               )}
             </div>
+          )}
+
+          {/* ---------------- BACKGROUND MUSIC TAB ---------------- */}
+          {activeTab === 'music' && (
+            <form onSubmit={handleSaveMusicSubmit} className="space-y-6 pb-12">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Upload & Preview Column */}
+                <section className="lg:col-span-7 rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-5">
+                  <div className="flex items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                    <div>
+                      <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                        <Music className="w-4 h-4 text-[#c19ee0]" />
+                        <span>Upload Background Music Track</span>
+                      </h2>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Auto-plays when visitors open the page (with instant tap-anywhere fallback if muted by browser policy).
+                      </p>
+                    </div>
+                  </div>
+
+                  <label
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const file = e.dataTransfer.files?.[0];
+                      if (file) {
+                        void handleMusicFileSelect(file);
+                      }
+                    }}
+                    className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-950/70 p-6 text-center cursor-pointer hover:border-[#c19ee0] transition-colors"
+                  >
+                    <Upload className="w-7 h-7 text-[#c19ee0] mb-2" />
+                    <span className="text-sm font-medium text-slate-200">
+                      {processingAudio
+                        ? 'Processing audio file...'
+                        : 'Click or drop an audio file here'}
+                    </span>
+                    <span className="text-xs text-slate-400 mt-1">
+                      MP3, M4A, AAC, WAV, or OGG up to 9 MB
+                    </span>
+                    <input
+                      type="file"
+                      accept="audio/*,.mp3,.m4a,.wav,.ogg,.aac,.webm"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          void handleMusicFileSelect(file);
+                        }
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+
+                  {/* Audio Preview Card */}
+                  {(pendingAudio || savedAudioPreviewSrc || (siteContent.bgMusicChunkCount ?? 0) > 0) && (
+                    <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-semibold text-emerald-400">
+                          {pendingAudio
+                            ? `Ready to publish · ${formatBytes(pendingAudio.byteLength)}${
+                                pendingAudio.durationSeconds > 0
+                                  ? ` · ${formatAudioTime(pendingAudio.durationSeconds)}`
+                                  : ''
+                              }`
+                            : (siteContent.bgMusicChunkCount ?? 0) > 0
+                              ? `Stored in Kingdom (${siteContent.bgMusicChunkCount} chunk${
+                                  siteContent.bgMusicChunkCount === 1 ? '' : 's'
+                                }${
+                                  (siteContent.bgMusicDuration ?? 0) > 0
+                                    ? ` · ${formatAudioTime(siteContent.bgMusicDuration ?? 0)}`
+                                    : ''
+                                })`
+                              : 'External Audio URL'}
+                        </span>
+                        {(pendingAudio ||
+                          (siteContent.bgMusicChunkCount ?? 0) > 0 ||
+                          Boolean(siteContent.bgMusicUrl)) && (
+                          <button
+                            type="button"
+                            disabled={savingMusic}
+                            onClick={() => void handleRemoveMusicTrack()}
+                            className="inline-flex items-center gap-1 text-xs text-red-300 hover:text-red-200 cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Remove Track</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {(pendingAudio?.audioDataUrl || savedAudioPreviewSrc) && (
+                        <audio
+                          controls
+                          src={pendingAudio?.audioDataUrl || savedAudioPreviewSrc || undefined}
+                          className="w-full"
+                        />
+                      )}
+                    </div>
+                  )}
+
+                  <label className="block space-y-1.5">
+                    <span className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                      <LinkIcon className="w-3.5 h-3.5" />
+                      <span>Or Paste Direct Audio URL (.mp3, .m4a, .ogg)</span>
+                    </span>
+                    <input
+                      type="url"
+                      maxLength={MAX_LENGTHS.bgMusicUrl}
+                      value={musicUrlInput}
+                      onChange={(e) => {
+                        setMusicUrlInput(e.target.value);
+                        if (e.target.value.trim()) {
+                          setPendingAudio(null);
+                        }
+                      }}
+                      placeholder="https://example.com/song.mp3"
+                      className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-[#c19ee0]"
+                    />
+                  </label>
+                </section>
+
+                {/* Metadata & Playback Behavior Column */}
+                <section className="lg:col-span-5 rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4">
+                  <h2 className="text-sm font-semibold text-white border-b border-slate-800 pb-3">
+                    Player Details &amp; Auto-Play
+                  </h2>
+
+                  <label className="block space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-medium text-slate-200">Track Title</span>
+                      <span className="font-mono-tabular text-slate-400">
+                        {musicTitle.length}/{MAX_LENGTHS.bgMusicTitle}
+                      </span>
+                    </div>
+                    <input
+                      type="text"
+                      maxLength={MAX_LENGTHS.bgMusicTitle}
+                      value={musicTitle}
+                      onChange={(e) => setMusicTitle(e.target.value)}
+                      placeholder="Our Royal Soundtrack"
+                      className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                    />
+                  </label>
+
+                  <label className="block space-y-1.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-medium text-slate-200">Artist / Subtitle</span>
+                      <span className="font-mono-tabular text-slate-400">
+                        {musicSubtitle.length}/{MAX_LENGTHS.bgMusicSubtitle}
+                      </span>
+                    </div>
+                    <input
+                      type="text"
+                      maxLength={MAX_LENGTHS.bgMusicSubtitle}
+                      value={musicSubtitle}
+                      onChange={(e) => setMusicSubtitle(e.target.value)}
+                      placeholder="Background Music"
+                      className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                    />
+                  </label>
+
+                  <div className="space-y-2.5 pt-2 border-t border-slate-800">
+                    <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/60 px-3.5 py-2.5 cursor-pointer">
+                      <div>
+                        <p className="text-xs font-medium text-white">Enable Background Music</p>
+                        <p className="text-[11px] text-slate-400">
+                          Show player controls and play on the live site
+                        </p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={musicEnabled}
+                        onChange={(e) => setMusicEnabled(e.target.checked)}
+                        className="w-4 h-4 accent-[#7251b5] cursor-pointer"
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/60 px-3.5 py-2.5 cursor-pointer">
+                      <div>
+                        <p className="text-xs font-medium text-white">Auto-Play on Page Load</p>
+                        <p className="text-[11px] text-slate-400">
+                          Starts immediately or on first tap if browser restricts autoplay
+                        </p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={musicAutoPlay}
+                        onChange={(e) => setMusicAutoPlay(e.target.checked)}
+                        className="w-4 h-4 accent-[#7251b5] cursor-pointer"
+                      />
+                    </label>
+
+                    <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/60 px-3.5 py-2.5 cursor-pointer">
+                      <div>
+                        <p className="text-xs font-medium text-white">Loop Continuously</p>
+                        <p className="text-[11px] text-slate-400">
+                          Replay automatically when the track finishes
+                        </p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={musicLoop}
+                        onChange={(e) => setMusicLoop(e.target.checked)}
+                        className="w-4 h-4 accent-[#7251b5] cursor-pointer"
+                      />
+                    </label>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={savingMusic || processingAudio}
+                    className="w-full min-h-[42px] inline-flex items-center justify-center gap-2 rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] px-4 py-2 text-sm font-semibold disabled:opacity-60 cursor-pointer"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>{savingMusic ? 'Publishing Music...' : 'Save & Publish Music'}</span>
+                  </button>
+                </section>
+              </div>
+            </form>
           )}
 
           {/* ---------------- TEXT & COPY EDITOR TAB ---------------- */}

@@ -172,6 +172,46 @@
           "description": "Preferred initial visual theme.",
           "enum": ["dark", "light"]
         },
+        "bgMusicEnabled": {
+          "type": "boolean",
+          "description": "Whether the background music section is enabled for playback."
+        },
+        "bgMusicTitle": {
+          "type": "string",
+          "description": "Display title of the uploaded background music track.",
+          "maxLength": 80
+        },
+        "bgMusicSubtitle": {
+          "type": "string",
+          "description": "Artist or short subtitle for the background music player.",
+          "maxLength": 80
+        },
+        "bgMusicUrl": {
+          "type": "string",
+          "description": "Optional external HTTPS audio URL when not uploading a file.",
+          "maxLength": 500
+        },
+        "bgMusicMimeType": {
+          "type": "string",
+          "description": "MIME type of the uploaded background audio track (e.g. audio/mpeg).",
+          "maxLength": 80
+        },
+        "bgMusicChunkCount": {
+          "type": "integer",
+          "description": "Number of ordered chunks stored under /site_content/main/music_chunks for uploaded audio."
+        },
+        "bgMusicAutoPlay": {
+          "type": "boolean",
+          "description": "Whether background music attempts to auto-play when the page loads."
+        },
+        "bgMusicLoop": {
+          "type": "boolean",
+          "description": "Whether background music loops continuously."
+        },
+        "bgMusicDuration": {
+          "type": "integer",
+          "description": "Track duration in whole seconds (0-7200)."
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
@@ -391,7 +431,13 @@
       "schema": {
         "$ref": "#/entities/SiteContent"
       },
-      "description": "Stores the editable website text, handles, stats, love letter, and theme preferences."
+      "description": "Stores the editable website text, handles, stats, love letter, background music metadata, and theme preferences."
+    },
+    "/site_content/{docId}/music_chunks/{chunkId}": {
+      "schema": {
+        "$ref": "#/entities/MediaChunk"
+      },
+      "description": "Stores ordered audio data chunks for uploaded background music."
     },
     "/photos/{photoId}": {
       "schema": {

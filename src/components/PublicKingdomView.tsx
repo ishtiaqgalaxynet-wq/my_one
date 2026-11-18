@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Crown,
   Heart,
   Loader2,
   Moon,
   Music,
+  Pause,
   Play,
   Share2,
   Sun,
@@ -25,6 +26,7 @@ interface PublicKingdomViewProps {
   isAdmin: boolean;
   onOpenAdmin: () => void;
   onLoadVideoSource: (photo: PhotoItem) => Promise<string>;
+  onLoadBackgroundMusic: (content: SiteContent) => Promise<string | null>;
 }
 
 export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
@@ -35,6 +37,7 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
   isAdmin,
   onOpenAdmin,
   onLoadVideoSource,
+  onLoadBackgroundMusic,
 }) => {
   const [particles, setParticles] = useState<FloatingBurstParticle[]>([]);
   const [ambientHeartsEnabled, setAmbientHeartsEnabled] = useState<boolean>(() => {
@@ -52,6 +55,155 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
   const [lightboxVideoLoading, setLightboxVideoLoading] = useState(false);
   const [lightboxVideoError, setLightboxVideoError] = useState<string | null>(null);
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+
+  // Background music player state (plays uploaded MP3 automatically on page load)
+  const bgAudioRef = useRef<HTMLAudioElement | null>(null);
+  const userPausedMusicRef = useRef(false);
+  const pausedForVideoRef = useRef(false);
+  const [bgMusicSrc, setBgMusicSrc] = useState<string | null>(null);
+  const [bgMusicLoading, setBgMusicLoading] = useState(false);
+  const [isMusicPlaying, setIsMusicPlaying] = useState(false);
+  const [awaitingGesture, setAwaitingGesture] = useState(false);
+  const [galleryVideoSrcs, setGalleryVideoSrcs] = useState<Record<string, string>>({});
+
+  const hasConfiguredMusic = Boolean(
+    content.bgMusicEnabled &&
+      ((content.bgMusicChunkCount ?? 0) > 0 || (content.bgMusicUrl ?? '').trim().length > 0)
+  );
+
+  // Load background music source when enabled / updated
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!hasConfiguredMusic) {
+      setBgMusicSrc(null);
+      setBgMusicLoading(false);
+      setIsMusicPlaying(false);
+      setAwaitingGesture(false);
+      return;
+    }
+
+    setBgMusicLoading(true);
+
+    onLoadBackgroundMusic(content)
+      .then((src) => {
+        if (!cancelled) {
+          userPausedMusicRef.current = false;
+          setBgMusicSrc(src);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setBgMusicSrc(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setBgMusicLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    hasConfiguredMusic,
+    content.bgMusicEnabled,
+    content.bgMusicChunkCount,
+    content.bgMusicUrl,
+    content.bgMusicTitle,
+    content.bgMusicDuration,
+    onLoadBackgroundMusic,
+    content,
+  ]);
+
+  const tryStartMusic = useCallback(async () => {
+    const audio = bgAudioRef.current;
+    if (!audio || !bgMusicSrc || userPausedMusicRef.current) return;
+    try {
+      await audio.play();
+      setIsMusicPlaying(true);
+      setAwaitingGesture(false);
+    } catch {
+      // Browser blocked unmuted autoplay until first user interaction
+      setIsMusicPlaying(false);
+      setAwaitingGesture(true);
+    }
+  }, [bgMusicSrc]);
+
+  // Attempt autoplay whenever source is ready & autoplay is enabled
+  useEffect(() => {
+    const audio = bgAudioRef.current;
+    if (!audio || !bgMusicSrc) return;
+
+    audio.loop = content.bgMusicLoop ?? true;
+
+    if (content.bgMusicAutoPlay ?? true) {
+      void tryStartMusic();
+    }
+  }, [bgMusicSrc, content.bgMusicAutoPlay, content.bgMusicLoop, tryStartMusic]);
+
+  // Keep loop synchronized
+  useEffect(() => {
+    const audio = bgAudioRef.current;
+    if (!audio) return;
+    audio.loop = content.bgMusicLoop ?? true;
+  }, [content.bgMusicLoop]);
+
+  // First-gesture fallback when browser blocks autoplay on initial load
+  useEffect(() => {
+    if (!awaitingGesture || !bgMusicSrc || !(content.bgMusicAutoPlay ?? true)) return;
+
+    const handleFirstInteraction = () => {
+      if (!userPausedMusicRef.current) {
+        void tryStartMusic();
+      }
+    };
+
+    window.addEventListener('pointerdown', handleFirstInteraction, { passive: true });
+    window.addEventListener('keydown', handleFirstInteraction, { passive: true });
+    window.addEventListener('touchstart', handleFirstInteraction, { passive: true });
+
+    return () => {
+      window.removeEventListener('pointerdown', handleFirstInteraction);
+      window.removeEventListener('keydown', handleFirstInteraction);
+      window.removeEventListener('touchstart', handleFirstInteraction);
+    };
+  }, [awaitingGesture, bgMusicSrc, content.bgMusicAutoPlay, tryStartMusic]);
+
+  // Pause background music while watching a video in the lightbox, resume when closed
+  useEffect(() => {
+    const audio = bgAudioRef.current;
+    if (!audio) return;
+
+    if (lightboxPhoto && isVideoItem(lightboxPhoto)) {
+      if (!audio.paused) {
+        pausedForVideoRef.current = true;
+        audio.pause();
+        setIsMusicPlaying(false);
+      }
+    } else if (pausedForVideoRef.current) {
+      pausedForVideoRef.current = false;
+      if (!userPausedMusicRef.current && bgMusicSrc) {
+        void tryStartMusic();
+      }
+    }
+  }, [lightboxPhoto, bgMusicSrc, tryStartMusic]);
+
+  const toggleMusicPlayback = async () => {
+    const audio = bgAudioRef.current;
+    if (!audio || !bgMusicSrc) return;
+
+    if (audio.paused) {
+      userPausedMusicRef.current = false;
+      await tryStartMusic();
+    } else {
+      userPausedMusicRef.current = true;
+      setAwaitingGesture(false);
+      audio.pause();
+      setIsMusicPlaying(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -94,6 +246,38 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
     () => photos.filter((p) => p.status === 'published'),
     [photos]
   );
+
+  // Resolve video sources so published gallery & collage videos auto-loop play smoothly
+  useEffect(() => {
+    let cancelled = false;
+    const videoItems = publishedPhotos.filter((p) => isVideoItem(p));
+    if (videoItems.length === 0) return;
+
+    videoItems.forEach((item) => {
+      if (item.videoData && item.videoData.trim().length > 0) {
+        if (!getYouTubeEmbedUrl(item.videoData)) {
+          setGalleryVideoSrcs((prev) =>
+            prev[item.id] === item.videoData ? prev : { ...prev, [item.id]: item.videoData! }
+          );
+        }
+        return;
+      }
+
+      if ((item.chunkCount ?? 0) > 0 && !galleryVideoSrcs[item.id]) {
+        onLoadVideoSource(item)
+          .then((src) => {
+            if (!cancelled && src && !getYouTubeEmbedUrl(src)) {
+              setGalleryVideoSrcs((prev) => ({ ...prev, [item.id]: src }));
+            }
+          })
+          .catch(() => undefined);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [publishedPhotos, onLoadVideoSource, galleryVideoSrcs]);
 
   const videoCount = useMemo(
     () => publishedPhotos.filter((p) => isVideoItem(p)).length,
@@ -180,6 +364,11 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
     const isVideo = isVideoItem(item);
     const hasValidMedia = item && (item.imageData || isVideo) && !failedImages[item.id];
     const hasPosterImage = Boolean(item?.imageData && !item.imageData.startsWith('data:video/') && !failedImages[item.id]);
+    const autoLoopVideoSrc =
+      isVideo && item
+        ? galleryVideoSrcs[item.id] ||
+          (item.videoData && !getYouTubeEmbedUrl(item.videoData) ? item.videoData : undefined)
+        : undefined;
 
     return (
       <button
@@ -192,7 +381,17 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
       >
         {hasValidMedia && item ? (
           <>
-            {hasPosterImage ? (
+            {autoLoopVideoSrc ? (
+              <video
+                src={autoLoopVideoSrc}
+                poster={hasPosterImage ? item.imageData : undefined}
+                autoPlay
+                loop
+                muted
+                playsInline
+                className="absolute inset-0 w-full h-full object-cover"
+              />
+            ) : hasPosterImage ? (
               <img
                 src={item.imageData}
                 alt={item.caption || item.sectionLabel}
@@ -200,16 +399,8 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
                 onError={() => setFailedImages((prev) => ({ ...prev, [item.id]: true }))}
                 className="absolute inset-0 w-full h-full object-cover"
               />
-            ) : isVideo && item.videoData ? (
-              <video
-                src={item.videoData}
-                muted
-                playsInline
-                preload="metadata"
-                className="absolute inset-0 w-full h-full object-cover"
-              />
             ) : null}
-            {isVideo && (
+            {isVideo && !autoLoopVideoSrc && (
               <span className="relative z-10 w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-black/55 backdrop-blur-sm border border-white/30 text-white flex items-center justify-center shadow-lg">
                 <Play className="w-4 h-4 sm:w-5 sm:h-5 fill-current ml-0.5" />
               </span>
@@ -277,6 +468,37 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
           </nav>
 
           <div className="flex items-center gap-2 shrink-0">
+            {hasConfiguredMusic && (
+              <button
+                type="button"
+                onClick={() => void toggleMusicPlayback()}
+                aria-label={isMusicPlaying ? 'Pause background music' : 'Play background music'}
+                title={
+                  isMusicPlaying
+                    ? `Playing: ${content.bgMusicTitle || 'Background Music'}`
+                    : awaitingGesture
+                      ? 'Tap to play background music'
+                      : 'Play background music'
+                }
+                className={`h-10 px-3 flex items-center justify-center gap-1.5 rounded-full border transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--kingdom-ivory)] ${
+                  isMusicPlaying
+                    ? 'bg-[#dec9e9] text-[#352063] border-[#dec9e9] hover:bg-[#dac3e8]'
+                    : 'border-[var(--kingdom-ivory)]/30 bg-[var(--kingdom-deep)]/45 text-[var(--kingdom-ivory)] hover:bg-[var(--kingdom-deep)]'
+                }`}
+              >
+                {bgMusicLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : isMusicPlaying ? (
+                  <Pause className="w-4 h-4" />
+                ) : (
+                  <Music className={`w-4 h-4 ${awaitingGesture ? 'animate-pulse' : ''}`} />
+                )}
+                <span className="hidden sm:inline text-xs font-semibold">
+                  {isMusicPlaying ? 'Playing' : 'Music'}
+                </span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={toggleAmbientHearts}
@@ -377,6 +599,25 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
             </div>
           </div>
         </section>
+
+        {/* Hidden Background Audio Player (Auto-plays uploaded MP3 on page load) */}
+        {bgMusicSrc && (
+          <audio
+            ref={bgAudioRef}
+            src={bgMusicSrc}
+            preload="auto"
+            onPlay={() => {
+              setIsMusicPlaying(true);
+              setAwaitingGesture(false);
+            }}
+            onPause={() => {
+              setIsMusicPlaying(false);
+            }}
+            onError={() => {
+              setIsMusicPlaying(false);
+            }}
+          />
+        )}
 
         {/* Section 2: Split Portrait & Royal Stats */}
         <section className="grid grid-cols-1 md:grid-cols-12 gap-5 items-stretch">
@@ -506,6 +747,12 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
                     Boolean(photo.imageData) &&
                     !photo.imageData.startsWith('data:video/') &&
                     !failedImages[photo.id];
+                  const autoLoopVideoSrc = isVideo
+                    ? galleryVideoSrcs[photo.id] ||
+                      (photo.videoData && !getYouTubeEmbedUrl(photo.videoData)
+                        ? photo.videoData
+                        : undefined)
+                    : undefined;
 
                   return (
                     <button
@@ -514,7 +761,17 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
                       onClick={() => setLightboxPhoto(photo)}
                       className="group relative aspect-[4/3] rounded-2xl overflow-hidden bg-[var(--kingdom-wine)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--kingdom-wine)]"
                     >
-                      {hasPosterImage ? (
+                      {autoLoopVideoSrc ? (
+                        <video
+                          src={autoLoopVideoSrc}
+                          poster={hasPosterImage ? photo.imageData : undefined}
+                          autoPlay
+                          loop
+                          muted
+                          playsInline
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        />
+                      ) : hasPosterImage ? (
                         <img
                           src={photo.imageData}
                           alt={photo.caption || photo.sectionLabel}
@@ -524,21 +781,13 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
                           }
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                         />
-                      ) : isVideo && photo.videoData ? (
-                        <video
-                          src={photo.videoData}
-                          muted
-                          playsInline
-                          preload="metadata"
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                        />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center text-[var(--kingdom-ivory)]">
                           <Crown className="w-6 h-6 opacity-80" />
                         </div>
                       )}
 
-                      {isVideo && (
+                      {isVideo && !autoLoopVideoSrc && (
                         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                           <span className="w-11 h-11 rounded-full bg-black/55 backdrop-blur-sm border border-white/30 text-white flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
                             <Play className="w-5 h-5 fill-current ml-0.5" />
@@ -684,6 +933,7 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
                         src={lightboxVideoSrc}
                         controls
                         autoPlay
+                        loop
                         playsInline
                         className="max-h-[78vh] w-full object-contain bg-black"
                       />
