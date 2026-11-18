@@ -93,6 +93,8 @@ export function useKingdomData() {
 
   // 2. Public site_content listener
   useEffect(() => {
+    if (!authReady) return;
+
     const path = 'site_content/main';
     const unsubscribe = onSnapshot(
       doc(db, 'site_content', 'main'),
@@ -114,10 +116,12 @@ export function useKingdomData() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [authReady, user?.uid]);
 
   // 3. Photos listener (public published items; full list for super admin + slot lookups for secondary admins)
   useEffect(() => {
+    if (!authReady || !adminCheckDone) return;
+
     const path = 'photos';
     const photosQuery = isSuperAdmin
       ? query(collection(db, 'photos'))
@@ -162,7 +166,7 @@ export function useKingdomData() {
     );
 
     return () => unsubscribe();
-  }, [isAdmin, isSuperAdmin]);
+  }, [authReady, adminCheckDone, isAdmin, isSuperAdmin]);
 
   // 4. Admins collection listener (super admin only)
   useEffect(() => {

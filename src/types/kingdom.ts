@@ -1,4 +1,4 @@
-export const SUPER_ADMIN_EMAIL = 'ishtiaq.galaxynet@gmail.com';
+export const SUPER_ADMIN_EMAIL = 'ishtiaqhimel11@gmail.com';
 
 export const MAX_LENGTHS = {
   displayName: 60,

@@ -26,7 +26,7 @@ service cloud.firestore {
     }
 
     function isBootstrapAdmin() {
-      return isSignedIn() && request.auth.token.email == 'ishtiaq.galaxynet@gmail.com';
+      return isSignedIn() && request.auth.token.email == 'ishtiaqhimel11@gmail.com';
     }
 
     function isAdmin() {
