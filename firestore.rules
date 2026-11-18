@@ -1,0 +1,184 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---- Global Reusable Primitives ----
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrapAdmin() {
+      return isSignedIn() && request.auth.token.email == 'ishtiaq.galaxynet@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrapAdmin() || (
+        isSignedIn() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // ---- Entity Validation Helpers ----
+    function isValidSiteContent(data) {
+      return data.keys().hasAll([
+        'displayName', 'accountSubtitle', 'instagramHandle', 'tiktokHandle',
+        'bioTitle', 'bioText', 'friendsLabel', 'memoriesCount', 'memoriesLabel',
+        'followerCount', 'followerLabel', 'followingCount', 'followingLabel',
+        'hugButtonText', 'shareButtonText', 'tiktokHugs', 'tiktokSmiles',
+        'tiktokLikes', 'pinnedSubtitle', 'pinnedCaption', 'letterTitle',
+        'letterBody', 'letterSignoff', 'finaleTitle', 'finaleButtonText',
+        'songLabel', 'songUrl', 'defaultTheme', 'updatedAt', 'updatedByUid'
+      ]) &&
+      data.keys().hasOnly([
+        'displayName', 'accountSubtitle', 'instagramHandle', 'tiktokHandle',
+        'bioTitle', 'bioText', 'friendsLabel', 'memoriesCount', 'memoriesLabel',
+        'followerCount', 'followerLabel', 'followingCount', 'followingLabel',
+        'hugButtonText', 'shareButtonText', 'tiktokHugs', 'tiktokSmiles',
+        'tiktokLikes', 'pinnedSubtitle', 'pinnedCaption', 'letterTitle',
+        'letterBody', 'letterSignoff', 'finaleTitle', 'finaleButtonText',
+        'songLabel', 'songUrl', 'defaultTheme', 'updatedAt', 'updatedByUid'
+      ]) &&
+      data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60 &&
+      data.accountSubtitle is string && data.accountSubtitle.size() >= 1 && data.accountSubtitle.size() <= 60 &&
+      data.instagramHandle is string && data.instagramHandle.size() >= 1 && data.instagramHandle.size() <= 60 &&
+      data.tiktokHandle is string && data.tiktokHandle.size() >= 1 && data.tiktokHandle.size() <= 60 &&
+      data.bioTitle is string && data.bioTitle.size() >= 1 && data.bioTitle.size() <= 80 &&
+      data.bioText is string && data.bioText.size() >= 1 && data.bioText.size() <= 1200 &&
+      data.friendsLabel is string && data.friendsLabel.size() >= 1 && data.friendsLabel.size() <= 40 &&
+      data.memoriesCount is string && data.memoriesCount.size() >= 1 && data.memoriesCount.size() <= 24 &&
+      data.memoriesLabel is string && data.memoriesLabel.size() >= 1 && data.memoriesLabel.size() <= 40 &&
+      data.followerCount is string && data.followerCount.size() >= 1 && data.followerCount.size() <= 24 &&
+      data.followerLabel is string && data.followerLabel.size() >= 1 && data.followerLabel.size() <= 40 &&
+      data.followingCount is string && data.followingCount.size() >= 1 && data.followingCount.size() <= 24 &&
+      data.followingLabel is string && data.followingLabel.size() >= 1 && data.followingLabel.size() <= 40 &&
+      data.hugButtonText is string && data.hugButtonText.size() >= 1 && data.hugButtonText.size() <= 32 &&
+      data.shareButtonText is string && data.shareButtonText.size() >= 1 && data.shareButtonText.size() <= 32 &&
+      data.tiktokHugs is string && data.tiktokHugs.size() >= 1 && data.tiktokHugs.size() <= 24 &&
+      data.tiktokSmiles is string && data.tiktokSmiles.size() >= 1 && data.tiktokSmiles.size() <= 24 &&
+      data.tiktokLikes is string && data.tiktokLikes.size() >= 1 && data.tiktokLikes.size() <= 24 &&
+      data.pinnedSubtitle is string && data.pinnedSubtitle.size() >= 1 && data.pinnedSubtitle.size() <= 80 &&
+      data.pinnedCaption is string && data.pinnedCaption.size() >= 1 && data.pinnedCaption.size() <= 120 &&
+      data.letterTitle is string && data.letterTitle.size() >= 1 && data.letterTitle.size() <= 100 &&
+      data.letterBody is string && data.letterBody.size() >= 1 && data.letterBody.size() <= 3000 &&
+      data.letterSignoff is string && data.letterSignoff.size() >= 1 && data.letterSignoff.size() <= 100 &&
+      data.finaleTitle is string && data.finaleTitle.size() >= 1 && data.finaleTitle.size() <= 160 &&
+      data.finaleButtonText is string && data.finaleButtonText.size() >= 1 && data.finaleButtonText.size() <= 40 &&
+      data.songLabel is string && data.songLabel.size() >= 1 && data.songLabel.size() <= 60 &&
+      data.songUrl is string && data.songUrl.size() >= 1 && data.songUrl.size() <= 300 &&
+      data.defaultTheme in ['dark', 'light'] &&
+      data.updatedAt == request.time &&
+      data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+      data.updatedByUid == request.auth.uid;
+    }
+
+    function isValidPhotoItem(data) {
+      return data.keys().hasAll([
+        'slotKey', 'sectionLabel', 'imageData', 'caption',
+        'isExtra', 'status', 'sortOrder', 'updatedAt', 'updatedByUid'
+      ]) &&
+      data.keys().hasOnly([
+        'slotKey', 'sectionLabel', 'imageData', 'caption',
+        'isExtra', 'status', 'sortOrder', 'updatedAt', 'updatedByUid'
+      ]) &&
+      data.slotKey is string && data.slotKey.size() >= 1 && data.slotKey.size() <= 64 &&
+      data.sectionLabel is string && data.sectionLabel.size() >= 1 && data.sectionLabel.size() <= 80 &&
+      data.imageData is string && data.imageData.size() >= 1 && data.imageData.size() <= 800000 &&
+      data.caption is string && data.caption.size() <= 200 &&
+      data.isExtra is bool &&
+      data.status in ['published', 'hidden'] &&
+      data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 10000 &&
+      data.updatedAt == request.time &&
+      data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+      data.updatedByUid == request.auth.uid;
+    }
+
+    function isValidAdminUser(data, adminUid) {
+      return data.keys().hasAll([
+        'uid', 'email', 'displayName', 'role', 'createdAt', 'createdByUid'
+      ]) &&
+      data.keys().hasOnly([
+        'uid', 'email', 'displayName', 'role', 'createdAt', 'createdByUid'
+      ]) &&
+      data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid == adminUid &&
+      data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+      data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+      data.role == 'admin' &&
+      data.createdAt is timestamp &&
+      data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128;
+    }
+
+    // ---- Collection Rules ----
+
+    // Connection check document
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+    }
+
+    // Publicly readable website content; admin-only writes
+    match /site_content/{docId} {
+      allow get: if isValidId(docId) && docId == 'main';
+      allow list: if isBootstrapAdmin();
+      allow create: if isValidId(docId) && docId == 'main' && isAdmin() && isValidSiteContent(incoming());
+      allow update: if isValidId(docId) && docId == 'main' && isAdmin() && isValidSiteContent(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'displayName', 'accountSubtitle', 'instagramHandle', 'tiktokHandle',
+          'bioTitle', 'bioText', 'friendsLabel', 'memoriesCount', 'memoriesLabel',
+          'followerCount', 'followerLabel', 'followingCount', 'followingLabel',
+          'hugButtonText', 'shareButtonText', 'tiktokHugs', 'tiktokSmiles',
+          'tiktokLikes', 'pinnedSubtitle', 'pinnedCaption', 'letterTitle',
+          'letterBody', 'letterSignoff', 'finaleTitle', 'finaleButtonText',
+          'songLabel', 'songUrl', 'defaultTheme', 'updatedAt', 'updatedByUid'
+        ]);
+      allow delete: if isValidId(docId) && isBootstrapAdmin();
+    }
+
+    // Photo slots & extra gallery items
+    match /photos/{photoId} {
+      allow get: if isValidId(photoId) && (existing().status == 'published' || isAdmin());
+      allow list: if resource.data.status == 'published' || isBootstrapAdmin();
+      allow create: if isValidId(photoId) && isAdmin() && isValidPhotoItem(incoming());
+      allow update: if isValidId(photoId) && isAdmin() && isValidPhotoItem(incoming()) &&
+        incoming().slotKey == existing().slotKey &&
+        incoming().isExtra == existing().isExtra &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'sectionLabel', 'imageData', 'caption', 'status', 'sortOrder', 'updatedAt', 'updatedByUid'
+        ]);
+      allow delete: if isValidId(photoId) && isAdmin();
+    }
+
+    // Authorized admin list (PII protected)
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && (
+        (isSignedIn() && request.auth.uid == adminUid) || isAdmin()
+      );
+      allow list: if isBootstrapAdmin();
+      allow create: if isValidId(adminUid) && isBootstrapAdmin() && isValidAdminUser(incoming(), adminUid) &&
+        incoming().createdAt == request.time &&
+        incoming().createdByUid == request.auth.uid;
+      allow update: if isValidId(adminUid) && isBootstrapAdmin() && isValidAdminUser(incoming(), adminUid) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'role']);
+      allow delete: if isValidId(adminUid) && isBootstrapAdmin();
+    }
+  }
+}

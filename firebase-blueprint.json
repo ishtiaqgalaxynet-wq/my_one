@@ -1,0 +1,356 @@
+{
+  "entities": {
+    "SiteContent": {
+      "title": "SiteContent",
+      "description": "Editable copy, profile handles, stats, love letter, music link, and theme configuration for The Princess Kingdom.",
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string",
+          "description": "Primary display name shown across the kingdom site.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "accountSubtitle": {
+          "type": "string",
+          "description": "Subtitle under the account name in navigation and hero pill.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "instagramHandle": {
+          "type": "string",
+          "description": "Instagram username without leading @ or with @.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "tiktokHandle": {
+          "type": "string",
+          "description": "TikTok username.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "bioTitle": {
+          "type": "string",
+          "description": "Heading for the hero bio section.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "bioText": {
+          "type": "string",
+          "description": "Narrative bio paragraph on the hero card.",
+          "minLength": 1,
+          "maxLength": 1200
+        },
+        "friendsLabel": {
+          "type": "string",
+          "description": "Friends count label in the stats card.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "memoriesCount": {
+          "type": "string",
+          "description": "Memories metric value.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "memoriesLabel": {
+          "type": "string",
+          "description": "Memories metric label.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "followerCount": {
+          "type": "string",
+          "description": "Follower count value.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "followerLabel": {
+          "type": "string",
+          "description": "Follower description label.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "followingCount": {
+          "type": "string",
+          "description": "Following count value.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "followingLabel": {
+          "type": "string",
+          "description": "Following description label.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "hugButtonText": {
+          "type": "string",
+          "description": "Label for the hug action button.",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "shareButtonText": {
+          "type": "string",
+          "description": "Label for the share love action button.",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "tiktokHugs": {
+          "type": "string",
+          "description": "Hugs stat value on social card.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "tiktokSmiles": {
+          "type": "string",
+          "description": "Smiles stat value on social card.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "tiktokLikes": {
+          "type": "string",
+          "description": "Likes stat value on social card.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "pinnedSubtitle": {
+          "type": "string",
+          "description": "Subtitle on the pinned showcase card.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "pinnedCaption": {
+          "type": "string",
+          "description": "Bottom caption on the pinned showcase card.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "letterTitle": {
+          "type": "string",
+          "description": "Heading of the love letter section.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "letterBody": {
+          "type": "string",
+          "description": "Full text body of the love letter.",
+          "minLength": 1,
+          "maxLength": 3000
+        },
+        "letterSignoff": {
+          "type": "string",
+          "description": "Closing signature of the letter.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "finaleTitle": {
+          "type": "string",
+          "description": "Closing headline above the love button.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "finaleButtonText": {
+          "type": "string",
+          "description": "Text inside the finale celebration button.",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "songLabel": {
+          "type": "string",
+          "description": "Label for the song link.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "songUrl": {
+          "type": "string",
+          "description": "External URL for the couple's song.",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "defaultTheme": {
+          "type": "string",
+          "description": "Preferred initial visual theme.",
+          "enum": ["dark", "light"]
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when content was last updated."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "UID of the admin who made the last update.",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "displayName",
+        "accountSubtitle",
+        "instagramHandle",
+        "tiktokHandle",
+        "bioTitle",
+        "bioText",
+        "friendsLabel",
+        "memoriesCount",
+        "memoriesLabel",
+        "followerCount",
+        "followerLabel",
+        "followingCount",
+        "followingLabel",
+        "hugButtonText",
+        "shareButtonText",
+        "tiktokHugs",
+        "tiktokSmiles",
+        "tiktokLikes",
+        "pinnedSubtitle",
+        "pinnedCaption",
+        "letterTitle",
+        "letterBody",
+        "letterSignoff",
+        "finaleTitle",
+        "finaleButtonText",
+        "songLabel",
+        "songUrl",
+        "defaultTheme",
+        "updatedAt",
+        "updatedByUid"
+      ]
+    },
+    "PhotoItem": {
+      "title": "PhotoItem",
+      "description": "A single photo slot or extra gallery memory stored as a compressed data URL or external HTTPS URL.",
+      "type": "object",
+      "properties": {
+        "slotKey": {
+          "type": "string",
+          "description": "Target slot identifier (s0-s13) or extra gallery identifier.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "sectionLabel": {
+          "type": "string",
+          "description": "Human-readable name of the slot or gallery item.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "imageData": {
+          "type": "string",
+          "description": "Compressed base64 image data URI or HTTPS image URL.",
+          "minLength": 1,
+          "maxLength": 800000
+        },
+        "caption": {
+          "type": "string",
+          "description": "Optional photo caption or alt description.",
+          "maxLength": 200
+        },
+        "isExtra": {
+          "type": "boolean",
+          "description": "True for admin-added extra gallery photos beyond the 14 base slots."
+        },
+        "status": {
+          "type": "string",
+          "description": "Visibility status of the photo.",
+          "enum": ["published", "hidden"]
+        },
+        "sortOrder": {
+          "type": "integer",
+          "description": "Display ordering index."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the photo was uploaded or modified."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "UID of the admin who uploaded or modified the photo.",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "slotKey",
+        "sectionLabel",
+        "imageData",
+        "caption",
+        "isExtra",
+        "status",
+        "sortOrder",
+        "updatedAt",
+        "updatedByUid"
+      ]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized administrator record keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the administrator.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified email address of the administrator.",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display label for the administrator.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "description": "Admin tier.",
+          "enum": ["admin"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin access was granted."
+        },
+        "createdByUid": {
+          "type": "string",
+          "description": "UID of the super admin who granted access.",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "uid",
+        "email",
+        "displayName",
+        "role",
+        "createdAt",
+        "createdByUid"
+      ]
+    }
+  },
+  "firestore": {
+    "/site_content/{docId}": {
+      "schema": {
+        "$ref": "#/entities/SiteContent"
+      },
+      "description": "Stores the editable website text, handles, stats, love letter, and theme preferences."
+    },
+    "/photos/{photoId}": {
+      "schema": {
+        "$ref": "#/entities/PhotoItem"
+      },
+      "description": "Stores each photo slot (s0-s13) and admin-added extra gallery photos."
+    },
+    "/admins/{adminUid}": {
+      "schema": {
+        "$ref": "#/entities/AdminUser"
+      },
+      "description": "Allowlist of authorized admin UIDs managed by the primary owner."
+    }
+  }
+}

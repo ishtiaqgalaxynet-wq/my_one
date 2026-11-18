@@ -1,0 +1,1537 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { type User } from 'firebase/auth';
+import {
+  Check,
+  Crown,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  FileText,
+  Image as ImageIcon,
+  LayoutDashboard,
+  Link as LinkIcon,
+  LogOut,
+  Plus,
+  RotateCcw,
+  Save,
+  Search,
+  Shield,
+  Trash2,
+  Upload,
+  UserPlus,
+  X,
+} from 'lucide-react';
+import { compressImageFile, formatBytes, isValidImageInput } from '../lib/imageUtils';
+import {
+  type AdminUser,
+  DEFAULT_SITE_CONTENT,
+  MAX_LENGTHS,
+  type PhotoItem,
+  type SiteContent,
+  SLOT_DEFINITIONS,
+  type SlotDefinition,
+} from '../types/kingdom';
+
+type DashboardTab = 'overview' | 'photos' | 'text' | 'access';
+type PhotoFilter = 'all' | 'hero' | 'social' | 'collage' | 'extra';
+
+interface AdminDashboardProps {
+  user: User;
+  isSuperAdmin: boolean;
+  siteContent: SiteContent;
+  hasRemoteContent: boolean;
+  photos: PhotoItem[];
+  admins: AdminUser[];
+  onSaveSiteContent: (content: SiteContent) => Promise<void>;
+  onSavePhotoSlot: (params: {
+    photoId: string;
+    slotKey: string;
+    sectionLabel: string;
+    imageData: string;
+    caption: string;
+    isExtra: boolean;
+    status: 'published' | 'hidden';
+    sortOrder: number;
+  }) => Promise<void>;
+  onAddExtraPhoto: (params: {
+    sectionLabel: string;
+    imageData: string;
+    caption: string;
+  }) => Promise<void>;
+  onTogglePhotoStatus: (photo: PhotoItem) => Promise<void>;
+  onDeletePhoto: (photoId: string) => Promise<void>;
+  onGrantAdmin: (params: { uid: string; email: string; displayName: string }) => Promise<void>;
+  onRevokeAdmin: (uid: string) => Promise<void>;
+  onViewSite: () => void;
+  onSignOut: () => void;
+}
+
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({
+  user,
+  isSuperAdmin,
+  siteContent,
+  hasRemoteContent,
+  photos,
+  admins,
+  onSaveSiteContent,
+  onSavePhotoSlot,
+  onAddExtraPhoto,
+  onTogglePhotoStatus,
+  onDeletePhoto,
+  onGrantAdmin,
+  onRevokeAdmin,
+  onViewSite,
+  onSignOut,
+}) => {
+  const [activeTab, setActiveTab] = useState<DashboardTab>('overview');
+  const [statusBanner, setStatusBanner] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+
+  // Text editor state
+  const [draftContent, setDraftContent] = useState<SiteContent>(siteContent);
+  const [savingText, setSavingText] = useState(false);
+
+  useEffect(() => {
+    setDraftContent(siteContent);
+  }, [siteContent]);
+
+  const textDirty = useMemo(() => {
+    const keys = Object.keys(DEFAULT_SITE_CONTENT) as Array<keyof SiteContent>;
+    return keys.some((k) => draftContent[k] !== siteContent[k]);
+  }, [draftContent, siteContent]);
+
+  // Photo manager state
+  const [photoFilter, setPhotoFilter] = useState<PhotoFilter>('all');
+  const [photoSearch, setPhotoSearch] = useState('');
+  const [busyPhotoId, setBusyPhotoId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [captionDrafts, setCaptionDrafts] = useState<Record<string, string>>({});
+
+  // Add new photo modal/panel state
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newTargetSlot, setNewTargetSlot] = useState<string>('extra');
+  const [newLabel, setNewLabel] = useState('Kingdom Memory');
+  const [newCaption, setNewCaption] = useState('');
+  const [newImageData, setNewImageData] = useState('');
+  const [newImageUrlInput, setNewImageUrlInput] = useState('');
+  const [newImageSizeLabel, setNewImageSizeLabel] = useState<string | null>(null);
+  const [submittingNewPhoto, setSubmittingNewPhoto] = useState(false);
+
+  // Admin access form state
+  const [adminUidInput, setAdminUidInput] = useState('');
+  const [adminEmailInput, setAdminEmailInput] = useState('');
+  const [adminNameInput, setAdminNameInput] = useState('');
+  const [grantingAdmin, setGrantingAdmin] = useState(false);
+
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  const notify = (type: 'success' | 'error', text: string) => {
+    setStatusBanner({ type, text });
+    window.setTimeout(() => {
+      setStatusBanner((curr) => (curr?.text === text ? null : curr));
+    }, 3600);
+  };
+
+  const photoById = useMemo(() => {
+    const map = new Map<string, PhotoItem>();
+    photos.forEach((p) => map.set(p.id, p));
+    return map;
+  }, [photos]);
+
+  const extraPhotos = useMemo(() => photos.filter((p) => p.isExtra), [photos]);
+  const filledBaseCount = useMemo(
+    () => SLOT_DEFINITIONS.filter((s) => photoById.has(s.slotKey)).length,
+    [photoById]
+  );
+  const publishedCount = useMemo(
+    () => photos.filter((p) => p.status === 'published').length,
+    [photos]
+  );
+
+  // Save Text Handler
+  const handleSaveText = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setSavingText(true);
+    try {
+      await onSaveSiteContent(draftContent);
+      notify('success', 'Website text and settings published.');
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to save text updates.');
+    } finally {
+      setSavingText(false);
+    }
+  };
+
+  // Upload or replace a base slot or extra photo via file input
+  const handleSlotFileUpload = async (
+    file: File,
+    target: {
+      photoId: string;
+      slotKey: string;
+      sectionLabel: string;
+      isExtra: boolean;
+      sortOrder: number;
+      existingCaption?: string;
+      existingStatus?: 'published' | 'hidden';
+    }
+  ) => {
+    setBusyPhotoId(target.photoId);
+    try {
+      const compressed = await compressImageFile(file);
+      await onSavePhotoSlot({
+        photoId: target.photoId,
+        slotKey: target.slotKey,
+        sectionLabel: target.sectionLabel,
+        imageData: compressed.dataUrl,
+        caption: target.existingCaption ?? '',
+        isExtra: target.isExtra,
+        status: target.existingStatus ?? 'published',
+        sortOrder: target.sortOrder,
+      });
+      notify(
+        'success',
+        `Saved ${target.sectionLabel} (${formatBytes(compressed.byteLength)})`
+      );
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Photo upload failed.');
+    } finally {
+      setBusyPhotoId(null);
+    }
+  };
+
+  const handleSaveCaption = async (photo: PhotoItem) => {
+    const nextCaption = (captionDrafts[photo.id] ?? photo.caption).trim();
+    setBusyPhotoId(photo.id);
+    try {
+      await onSavePhotoSlot({
+        photoId: photo.id,
+        slotKey: photo.slotKey,
+        sectionLabel: photo.sectionLabel,
+        imageData: photo.imageData,
+        caption: nextCaption,
+        isExtra: photo.isExtra,
+        status: photo.status,
+        sortOrder: photo.sortOrder,
+      });
+      notify('success', `Updated caption for ${photo.sectionLabel}.`);
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Could not update caption.');
+    } finally {
+      setBusyPhotoId(null);
+    }
+  };
+
+  const handleNewModalFile = async (file: File) => {
+    try {
+      const compressed = await compressImageFile(file);
+      setNewImageData(compressed.dataUrl);
+      setNewImageUrlInput('');
+      setNewImageSizeLabel(
+        `${compressed.width}×${compressed.height} · ${formatBytes(compressed.byteLength)}`
+      );
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to process photo.');
+    }
+  };
+
+  const handleCreateOrAssignPhoto = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const resolvedImage = (newImageData || newImageUrlInput).trim();
+    if (!isValidImageInput(resolvedImage)) {
+      notify('error', 'Please upload an image file or enter a valid HTTPS image URL.');
+      return;
+    }
+
+    setSubmittingNewPhoto(true);
+    try {
+      if (newTargetSlot === 'extra') {
+        await onAddExtraPhoto({
+          sectionLabel: newLabel.trim() || 'Kingdom Memory',
+          imageData: resolvedImage,
+          caption: newCaption.trim(),
+        });
+        notify('success', 'Added new photo to the Kingdom Gallery.');
+      } else {
+        const slotDef = SLOT_DEFINITIONS.find((s) => s.slotKey === newTargetSlot);
+        if (!slotDef) throw new Error('Invalid slot selected.');
+        await onSavePhotoSlot({
+          photoId: slotDef.slotKey,
+          slotKey: slotDef.slotKey,
+          sectionLabel: slotDef.sectionLabel,
+          imageData: resolvedImage,
+          caption: newCaption.trim(),
+          isExtra: false,
+          status: 'published',
+          sortOrder: slotDef.sortOrder,
+        });
+        notify('success', `Published photo to ${slotDef.sectionLabel}.`);
+      }
+
+      setShowAddModal(false);
+      setNewImageData('');
+      setNewImageUrlInput('');
+      setNewCaption('');
+      setNewImageSizeLabel(null);
+      setNewTargetSlot('extra');
+      setNewLabel('Kingdom Memory');
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to save photo.');
+    } finally {
+      setSubmittingNewPhoto(false);
+    }
+  };
+
+  const handleGrantAdminSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adminUidInput.trim() || !adminEmailInput.trim()) {
+      notify('error', 'Both UID and Email are required.');
+      return;
+    }
+    setGrantingAdmin(true);
+    try {
+      await onGrantAdmin({
+        uid: adminUidInput,
+        email: adminEmailInput,
+        displayName: adminNameInput || 'Admin',
+      });
+      setAdminUidInput('');
+      setAdminEmailInput('');
+      setAdminNameInput('');
+      notify('success', 'Administrator access granted.');
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Could not grant admin access.');
+    } finally {
+      setGrantingAdmin(false);
+    }
+  };
+
+  // Filtered slots & photos
+  const filteredSlots = useMemo(() => {
+    if (photoFilter === 'extra') return [];
+    const q = photoSearch.trim().toLowerCase();
+    return SLOT_DEFINITIONS.filter((slot) => {
+      const catMatch = photoFilter === 'all' || slot.category === photoFilter;
+      const searchMatch =
+        !q ||
+        slot.sectionLabel.toLowerCase().includes(q) ||
+        slot.slotKey.toLowerCase().includes(q) ||
+        (photoById.get(slot.slotKey)?.caption ?? '').toLowerCase().includes(q);
+      return catMatch && searchMatch;
+    });
+  }, [photoFilter, photoSearch, photoById]);
+
+  const filteredExtraPhotos = useMemo(() => {
+    if (photoFilter !== 'all' && photoFilter !== 'extra') return [];
+    const q = photoSearch.trim().toLowerCase();
+    return extraPhotos.filter(
+      (p) =>
+        !q ||
+        p.sectionLabel.toLowerCase().includes(q) ||
+        p.caption.toLowerCase().includes(q)
+    );
+  }, [photoFilter, photoSearch, extraPhotos]);
+
+  const tabLabel: Record<DashboardTab, string> = {
+    overview: 'Overview',
+    photos: 'Photo Manager',
+    text: 'Text & Copy Editor',
+    access: 'Admin Access',
+  };
+
+  const renderField = (
+    label: string,
+    field: keyof SiteContent,
+    maxLength: number,
+    options?: { multiline?: boolean; rows?: number; helper?: string }
+  ) => {
+    const val = String(draftContent[field] ?? '');
+    return (
+      <label className="block space-y-1.5">
+        <div className="flex items-center justify-between gap-2 text-xs">
+          <span className="font-medium text-slate-200">{label}</span>
+          <span className="font-mono-tabular text-slate-400">
+            {val.length}/{maxLength}
+          </span>
+        </div>
+        {options?.multiline ? (
+          <textarea
+            value={val}
+            maxLength={maxLength}
+            rows={options.rows ?? 4}
+            onChange={(e) =>
+              setDraftContent((prev) => ({ ...prev, [field]: e.target.value }))
+            }
+            className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3.5 py-2.5 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-[#c19ee0] transition-colors"
+          />
+        ) : (
+          <input
+            type="text"
+            value={val}
+            maxLength={maxLength}
+            onChange={(e) =>
+              setDraftContent((prev) => ({ ...prev, [field]: e.target.value }))
+            }
+            className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3.5 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-[#c19ee0] transition-colors"
+          />
+        )}
+        {options?.helper && <p className="text-[11px] text-slate-400">{options.helper}</p>}
+      </label>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col lg:flex-row">
+      {/* Left Sidebar (Desktop) */}
+      <aside className="hidden lg:flex lg:w-64 lg:flex-col border-r border-slate-800 bg-slate-900/70 shrink-0">
+        <div className="h-16 px-5 border-b border-slate-800 flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-[#7251b5] text-[#f6f1fc] flex items-center justify-center shrink-0">
+            <Crown className="w-4 h-4" />
+          </div>
+          <span className="font-semibold text-sm text-white truncate">
+            Kingdom Studio
+          </span>
+        </div>
+
+        <nav className="flex-1 p-3 space-y-1">
+          {(
+            [
+              { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+              { id: 'photos', label: 'Photo Manager', icon: ImageIcon },
+              { id: 'text', label: 'Text & Copy', icon: FileText },
+              { id: 'access', label: 'Admin Access', icon: Shield },
+            ] as const
+          ).map(({ id, label, icon: Icon }) => {
+            const active = activeTab === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setActiveTab(id)}
+                className={`w-full min-h-[42px] flex items-center gap-3 px-3.5 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[#7251b5] text-[#f6f1fc]'
+                    : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/70'
+                }`}
+              >
+                <Icon className="w-4 h-4 shrink-0" />
+                <span className="truncate">{label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="p-4 border-t border-slate-800 space-y-3">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-200 truncate">
+              {user.displayName || 'Administrator'}
+            </p>
+            <p className="text-[11px] text-slate-400 truncate">{user.email}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="w-full min-h-[38px] inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 hover:bg-slate-800 text-xs font-medium text-slate-300 transition-colors cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Sign Out</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content Workspace */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Top Bar Contract */}
+        <header className="sticky top-0 z-20 h-16 px-4 sm:px-6 border-b border-slate-800 bg-slate-950/90 backdrop-blur-md flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2 text-sm min-w-0">
+            <span className="text-slate-400 hidden sm:inline">Admin Dashboard</span>
+            <span className="text-slate-600 hidden sm:inline">/</span>
+            <h1 className="font-semibold text-white truncate">{tabLabel[activeTab]}</h1>
+            {textDirty && (
+              <span className="text-xs text-amber-400 ml-2 whitespace-nowrap">
+                · Unsaved text changes
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={onViewSite}
+              className="min-h-[38px] inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 px-3.5 py-1.5 text-xs font-medium text-slate-100 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>View Live Site</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onSignOut}
+              className="lg:hidden min-h-[38px] inline-flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-800 whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Sign Out</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Mobile Tab Strip */}
+        <div className="lg:hidden border-b border-slate-800 bg-slate-900/50 px-3 py-2 flex items-center gap-1.5 overflow-x-auto">
+          {(
+            [
+              { id: 'overview', label: 'Overview' },
+              { id: 'photos', label: 'Photos' },
+              { id: 'text', label: 'Text Editor' },
+              { id: 'access', label: 'Access' },
+            ] as const
+          ).map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setActiveTab(item.id)}
+              className={`px-3 py-2 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 cursor-pointer ${
+                activeTab === item.id
+                  ? 'bg-[#7251b5] text-[#f6f1fc]'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Status Toast */}
+        {statusBanner && (
+          <div className="px-4 sm:px-6 pt-4">
+            <div
+              role="status"
+              className={`rounded-xl border px-4 py-3 text-xs sm:text-sm flex items-center justify-between gap-3 ${
+                statusBanner.type === 'success'
+                  ? 'bg-emerald-950/50 border-emerald-800/70 text-emerald-200'
+                  : 'bg-red-950/50 border-red-800/70 text-red-200'
+              }`}
+            >
+              <span>{statusBanner.text}</span>
+              <button
+                type="button"
+                onClick={() => setStatusBanner(null)}
+                className="text-current opacity-70 hover:opacity-100 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Active View Content */}
+        <main className="flex-1 p-4 sm:p-6 max-w-6xl w-full mx-auto space-y-6">
+          {/* ---------------- OVERVIEW TAB ---------------- */}
+          {activeTab === 'overview' && (
+            <div className="space-y-6">
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-1">
+                  <p className="text-xs text-slate-400">Base Photo Slots</p>
+                  <p className="text-2xl font-bold font-mono-tabular text-white">
+                    {filledBaseCount} / {SLOT_DEFINITIONS.length}
+                  </p>
+                  <p className="text-xs text-slate-500">Hero, highlights &amp; collage</p>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-1">
+                  <p className="text-xs text-slate-400">Extra Gallery</p>
+                  <p className="text-2xl font-bold font-mono-tabular text-white">
+                    {extraPhotos.length}
+                  </p>
+                  <p className="text-xs text-slate-500">Additional memories</p>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-1">
+                  <p className="text-xs text-slate-400">Published Photos</p>
+                  <p className="text-2xl font-bold font-mono-tabular text-white">
+                    {publishedCount}
+                  </p>
+                  <p className="text-xs text-slate-500">Visible to visitors</p>
+                </div>
+
+                <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 space-y-1">
+                  <p className="text-xs text-slate-400">Site Copy Source</p>
+                  <p className="text-2xl font-bold text-white">
+                    {hasRemoteContent ? 'Published' : 'Default'}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Theme: {siteContent.defaultTheme}
+                  </p>
+                </div>
+              </div>
+
+              {/* Quick Actions */}
+              <div className="rounded-xl border border-slate-800 bg-slate-900 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <h2 className="text-base font-semibold text-white">
+                    Customize {siteContent.displayName}
+                  </h2>
+                  <p className="text-xs sm:text-sm text-slate-400">
+                    Upload photos to any slot, add extra gallery memories, or customize every headline and letter paragraph.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('photos');
+                      setShowAddModal(true);
+                    }}
+                    className="min-h-[40px] inline-flex items-center gap-2 rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] px-4 py-2 text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add Photo</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('text')}
+                    className="min-h-[40px] inline-flex items-center gap-2 rounded-lg border border-slate-700 hover:bg-slate-800 text-slate-200 px-4 py-2 text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>Edit Text</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Slot Inventory Table */}
+              <div className="rounded-xl border border-slate-800 bg-slate-900 overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-slate-800 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-white">
+                    Website Photo Slots
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('photos')}
+                    className="text-xs text-[#c19ee0] hover:underline cursor-pointer"
+                  >
+                    Open Photo Manager
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="border-b border-slate-800 text-slate-400 bg-slate-950/40">
+                      <tr>
+                        <th className="py-2.5 px-4 font-medium">Slot</th>
+                        <th className="py-2.5 px-4 font-medium">Location</th>
+                        <th className="py-2.5 px-4 font-medium">Aspect</th>
+                        <th className="py-2.5 px-4 font-medium">Status</th>
+                        <th className="py-2.5 px-4 font-medium text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/80">
+                      {SLOT_DEFINITIONS.map((slot) => {
+                        const existing = photoById.get(slot.slotKey);
+                        return (
+                          <tr key={slot.slotKey} className="hover:bg-slate-800/30">
+                            <td className="py-2.5 px-4 font-mono-tabular text-slate-300">
+                              {slot.slotKey}
+                            </td>
+                            <td className="py-2.5 px-4 text-slate-200 font-medium">
+                              {slot.sectionLabel}
+                            </td>
+                            <td className="py-2.5 px-4 text-slate-400">
+                              {slot.aspectHint}
+                            </td>
+                            <td className="py-2.5 px-4">
+                              {existing ? (
+                                <span
+                                  className={
+                                    existing.status === 'published'
+                                      ? 'text-emerald-400 font-medium'
+                                      : 'text-amber-400 font-medium'
+                                  }
+                                >
+                                  {existing.status === 'published' ? 'Published' : 'Hidden'}
+                                </span>
+                              ) : (
+                                <span className="text-slate-500">Empty</span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-4 text-right">
+                              <button
+                                type="button"
+                                onClick={() => setActiveTab('photos')}
+                                className="text-xs text-slate-300 hover:text-white underline underline-offset-4 cursor-pointer"
+                              >
+                                {existing ? 'Manage' : 'Upload'}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ---------------- PHOTO MANAGER TAB ---------------- */}
+          {activeTab === 'photos' && (
+            <div className="space-y-6">
+              {/* Filter & Add Toolbar */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-900 border border-slate-800">
+                  {(
+                    [
+                      { id: 'all', label: 'All' },
+                      { id: 'hero', label: 'Hero & Bio' },
+                      { id: 'social', label: 'Social & Pinned' },
+                      { id: 'collage', label: 'Collage' },
+                      { id: 'extra', label: `Extra (${extraPhotos.length})` },
+                    ] as const
+                  ).map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => setPhotoFilter(f.id)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap cursor-pointer transition-colors ${
+                        photoFilter === f.id
+                          ? 'bg-[#7251b5] text-[#f6f1fc]'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-2.5">
+                  <div className="relative flex-1 md:w-56">
+                    <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={photoSearch}
+                      onChange={(e) => setPhotoSearch(e.target.value)}
+                      placeholder="Search slots or captions..."
+                      className="w-full rounded-lg bg-slate-900 border border-slate-800 pl-9 pr-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#c19ee0]"
+                    />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowAddModal(true)}
+                    className="min-h-[38px] inline-flex items-center gap-2 rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] px-4 py-2 text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add Photo</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Base Slots Grid */}
+              {filteredSlots.length > 0 && (
+                <div className="space-y-3">
+                  <h2 className="text-sm font-semibold text-slate-200">
+                    Layout Photo Slots
+                  </h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {filteredSlots.map((slot: SlotDefinition) => {
+                      const item = photoById.get(slot.slotKey);
+                      const isBusy = busyPhotoId === slot.slotKey;
+                      const captionValue =
+                        captionDrafts[slot.slotKey] ?? item?.caption ?? '';
+
+                      return (
+                        <div
+                          key={slot.slotKey}
+                          className="rounded-xl border border-slate-800 bg-slate-900 overflow-hidden flex flex-col"
+                        >
+                          {/* Image Preview */}
+                          <div className="relative h-44 bg-slate-950 flex items-center justify-center overflow-hidden">
+                            {item ? (
+                              <img
+                                src={item.imageData}
+                                alt={item.caption || slot.sectionLabel}
+                                referrerPolicy="no-referrer"
+                                className={`w-full h-full object-cover ${
+                                  item.status === 'hidden' ? 'opacity-45 grayscale' : ''
+                                }`}
+                              />
+                            ) : (
+                              <div className="text-center space-y-1.5 px-4">
+                                <Crown className="w-6 h-6 mx-auto text-slate-600" />
+                                <p className="text-xs text-slate-500">
+                                  No photo uploaded yet
+                                </p>
+                              </div>
+                            )}
+
+                            <input
+                              ref={(el) => {
+                                fileInputRefs.current[slot.slotKey] = el;
+                              }}
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  void handleSlotFileUpload(file, {
+                                    photoId: slot.slotKey,
+                                    slotKey: slot.slotKey,
+                                    sectionLabel: slot.sectionLabel,
+                                    isExtra: false,
+                                    sortOrder: slot.sortOrder,
+                                    existingCaption: item?.caption,
+                                    existingStatus: item?.status,
+                                  });
+                                }
+                                e.target.value = '';
+                              }}
+                            />
+                          </div>
+
+                          {/* Slot Details & Actions */}
+                          <div className="p-4 flex-1 flex flex-col justify-between gap-3">
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between gap-2 text-xs text-slate-400">
+                                <span className="font-mono-tabular">{slot.slotKey}</span>
+                                <span>{slot.aspectHint}</span>
+                              </div>
+                              <h3 className="text-sm font-semibold text-white">
+                                {slot.sectionLabel}
+                              </h3>
+                              <p className="text-xs text-slate-400 leading-relaxed">
+                                {slot.description}
+                              </p>
+                            </div>
+
+                            {item && (
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={captionValue}
+                                  maxLength={MAX_LENGTHS.caption}
+                                  placeholder="Optional caption..."
+                                  onChange={(e) =>
+                                    setCaptionDrafts((prev) => ({
+                                      ...prev,
+                                      [slot.slotKey]: e.target.value,
+                                    }))
+                                  }
+                                  className="flex-1 min-w-0 rounded-lg bg-slate-950 border border-slate-800 px-2.5 py-1.5 text-xs text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-[#c19ee0]"
+                                />
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={() => void handleSaveCaption(item)}
+                                  title="Save caption"
+                                  className="min-h-[32px] px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 cursor-pointer"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )}
+
+                            <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-800">
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() =>
+                                  fileInputRefs.current[slot.slotKey]?.click()
+                                }
+                                className="min-h-[36px] inline-flex items-center gap-1.5 rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] px-3 py-1.5 text-xs font-semibold disabled:opacity-50 cursor-pointer"
+                              >
+                                <Upload className="w-3.5 h-3.5" />
+                                <span>
+                                  {isBusy
+                                    ? 'Saving...'
+                                    : item
+                                      ? 'Replace'
+                                      : 'Upload Photo'}
+                                </span>
+                              </button>
+
+                              {item && (
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() => void onTogglePhotoStatus(item)}
+                                    title={
+                                      item.status === 'published'
+                                        ? 'Hide from public site'
+                                        : 'Publish to public site'
+                                    }
+                                    className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg border border-slate-700 hover:bg-slate-800 text-slate-300 cursor-pointer"
+                                  >
+                                    {item.status === 'published' ? (
+                                      <Eye className="w-3.5 h-3.5" />
+                                    ) : (
+                                      <EyeOff className="w-3.5 h-3.5 text-amber-400" />
+                                    )}
+                                  </button>
+
+                                  {confirmDeleteId === item.id ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        void onDeletePhoto(item.id);
+                                        setConfirmDeleteId(null);
+                                      }}
+                                      className="min-h-[36px] px-2.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-semibold cursor-pointer"
+                                    >
+                                      Confirm
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteId(item.id)}
+                                      title="Remove photo"
+                                      className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg border border-slate-700 hover:bg-red-950/60 hover:border-red-800 text-slate-400 hover:text-red-300 cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Extra Gallery Photos */}
+              {(photoFilter === 'all' || photoFilter === 'extra') && (
+                <div className="space-y-3 pt-2">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-sm font-semibold text-slate-200">
+                      Extra Gallery Memories ({filteredExtraPhotos.length})
+                    </h2>
+                  </div>
+
+                  {filteredExtraPhotos.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-slate-800 bg-slate-900/40 p-8 text-center space-y-3">
+                      <ImageIcon className="w-7 h-7 mx-auto text-slate-600" />
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium text-slate-300">
+                          No extra gallery photos yet
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          Add extra photos beyond the 14 layout slots to expand the More Kingdom Memories section.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewTargetSlot('extra');
+                          setShowAddModal(true);
+                        }}
+                        className="min-h-[38px] inline-flex items-center gap-2 rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] px-4 py-2 text-xs font-semibold cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Add Gallery Photo</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                      {filteredExtraPhotos.map((photo) => {
+                        const isBusy = busyPhotoId === photo.id;
+                        const captionValue =
+                          captionDrafts[photo.id] ?? photo.caption;
+
+                        return (
+                          <div
+                            key={photo.id}
+                            className="rounded-xl border border-slate-800 bg-slate-900 overflow-hidden flex flex-col"
+                          >
+                            <div className="relative h-44 bg-slate-950 overflow-hidden">
+                              <img
+                                src={photo.imageData}
+                                alt={photo.caption || photo.sectionLabel}
+                                referrerPolicy="no-referrer"
+                                className={`w-full h-full object-cover ${
+                                  photo.status === 'hidden'
+                                    ? 'opacity-45 grayscale'
+                                    : ''
+                                }`}
+                              />
+                              <input
+                                ref={(el) => {
+                                  fileInputRefs.current[photo.id] = el;
+                                }}
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) {
+                                    void handleSlotFileUpload(file, {
+                                      photoId: photo.id,
+                                      slotKey: photo.slotKey,
+                                      sectionLabel: photo.sectionLabel,
+                                      isExtra: true,
+                                      sortOrder: photo.sortOrder,
+                                      existingCaption: photo.caption,
+                                      existingStatus: photo.status,
+                                    });
+                                  }
+                                  e.target.value = '';
+                                }}
+                              />
+                            </div>
+
+                            <div className="p-4 flex-1 flex flex-col justify-between gap-3">
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between text-xs text-slate-400">
+                                  <span>Extra Memory</span>
+                                  <span>
+                                    {photo.status === 'published'
+                                      ? 'Published'
+                                      : 'Hidden'}
+                                  </span>
+                                </div>
+                                <h3 className="text-sm font-semibold text-white truncate">
+                                  {photo.sectionLabel}
+                                </h3>
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={captionValue}
+                                  maxLength={MAX_LENGTHS.caption}
+                                  placeholder="Photo caption..."
+                                  onChange={(e) =>
+                                    setCaptionDrafts((prev) => ({
+                                      ...prev,
+                                      [photo.id]: e.target.value,
+                                    }))
+                                  }
+                                  className="flex-1 min-w-0 rounded-lg bg-slate-950 border border-slate-800 px-2.5 py-1.5 text-xs text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-[#c19ee0]"
+                                />
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={() => void handleSaveCaption(photo)}
+                                  title="Save caption"
+                                  className="min-h-[32px] px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 cursor-pointer"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+
+                              <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-800">
+                                <button
+                                  type="button"
+                                  disabled={isBusy}
+                                  onClick={() =>
+                                    fileInputRefs.current[photo.id]?.click()
+                                  }
+                                  className="min-h-[36px] inline-flex items-center gap-1.5 rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] px-3 py-1.5 text-xs font-semibold cursor-pointer"
+                                >
+                                  <Upload className="w-3.5 h-3.5" />
+                                  <span>Replace</span>
+                                </button>
+
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => void onTogglePhotoStatus(photo)}
+                                    className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg border border-slate-700 hover:bg-slate-800 text-slate-300 cursor-pointer"
+                                  >
+                                    {photo.status === 'published' ? (
+                                      <Eye className="w-3.5 h-3.5" />
+                                    ) : (
+                                      <EyeOff className="w-3.5 h-3.5 text-amber-400" />
+                                    )}
+                                  </button>
+
+                                  {confirmDeleteId === photo.id ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        void onDeletePhoto(photo.id);
+                                        setConfirmDeleteId(null);
+                                      }}
+                                      className="min-h-[36px] px-2.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-semibold cursor-pointer"
+                                    >
+                                      Confirm
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteId(photo.id)}
+                                      className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg border border-slate-700 hover:bg-red-950/60 hover:border-red-800 text-slate-400 hover:text-red-300 cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ---------------- TEXT & COPY EDITOR TAB ---------------- */}
+          {activeTab === 'text' && (
+            <form onSubmit={handleSaveText} className="space-y-6 pb-20">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Identity & Handles */}
+                <section className="rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4">
+                  <h2 className="text-sm font-semibold text-white border-b border-slate-800 pb-2.5">
+                    Identity &amp; Social Handles
+                  </h2>
+                  {renderField('Display Name', 'displayName', MAX_LENGTHS.displayName)}
+                  {renderField('Account Subtitle', 'accountSubtitle', MAX_LENGTHS.accountSubtitle)}
+                  {renderField('Instagram Handle', 'instagramHandle', MAX_LENGTHS.instagramHandle)}
+                </section>
+
+                {/* Hero & Bio */}
+                <section className="rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4">
+                  <h2 className="text-sm font-semibold text-white border-b border-slate-800 pb-2.5">
+                    Hero &amp; Bio Story
+                  </h2>
+                  {renderField('Bio Heading', 'bioTitle', MAX_LENGTHS.bioTitle)}
+                  {renderField('Bio Story', 'bioText', MAX_LENGTHS.bioText, {
+                    multiline: true,
+                    rows: 6,
+                  })}
+                </section>
+
+                {/* Stats & Buttons */}
+                <section className="rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4">
+                  <h2 className="text-sm font-semibold text-white border-b border-slate-800 pb-2.5">
+                    Profile Stats &amp; Action Buttons
+                  </h2>
+                  {renderField('Friends Label', 'friendsLabel', MAX_LENGTHS.friendsLabel)}
+                  <div className="grid grid-cols-2 gap-3">
+                    {renderField('Memories Value', 'memoriesCount', MAX_LENGTHS.memoriesCount)}
+                    {renderField('Memories Label', 'memoriesLabel', MAX_LENGTHS.memoriesLabel)}
+                    {renderField('Follower Value', 'followerCount', MAX_LENGTHS.followerCount)}
+                    {renderField('Follower Label', 'followerLabel', MAX_LENGTHS.followerLabel)}
+                    {renderField('Following Value', 'followingCount', MAX_LENGTHS.followingCount)}
+                    {renderField('Following Label', 'followingLabel', MAX_LENGTHS.followingLabel)}
+                    {renderField('Hug Button', 'hugButtonText', MAX_LENGTHS.hugButtonText)}
+                    {renderField('Share Button', 'shareButtonText', MAX_LENGTHS.shareButtonText)}
+                  </div>
+                </section>
+
+                {/* Social & Pinned Showcase */}
+                <section className="rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4">
+                  <h2 className="text-sm font-semibold text-white border-b border-slate-800 pb-2.5">
+                    Social &amp; Pinned Showcase Card
+                  </h2>
+                  <div className="grid grid-cols-3 gap-3">
+                    {renderField('Hugs Stat', 'tiktokHugs', MAX_LENGTHS.tiktokHugs)}
+                    {renderField('Smiles Stat', 'tiktokSmiles', MAX_LENGTHS.tiktokSmiles)}
+                    {renderField('Likes Stat', 'tiktokLikes', MAX_LENGTHS.tiktokLikes)}
+                  </div>
+                  {renderField('Pinned Subtitle', 'pinnedSubtitle', MAX_LENGTHS.pinnedSubtitle)}
+                  {renderField('Pinned Caption', 'pinnedCaption', MAX_LENGTHS.pinnedCaption)}
+                </section>
+
+                {/* Love Letter */}
+                <section className="rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4 lg:col-span-2">
+                  <h2 className="text-sm font-semibold text-white border-b border-slate-800 pb-2.5">
+                    Love Letter Section
+                  </h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {renderField('Letter Heading', 'letterTitle', MAX_LENGTHS.letterTitle)}
+                    {renderField('Letter Sign-off', 'letterSignoff', MAX_LENGTHS.letterSignoff)}
+                  </div>
+                  {renderField('Letter Body', 'letterBody', MAX_LENGTHS.letterBody, {
+                    multiline: true,
+                    rows: 6,
+                    helper: 'Use blank lines to separate paragraphs.',
+                  })}
+                </section>
+
+                {/* Finale, Music & Theme */}
+                <section className="rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4 lg:col-span-2">
+                  <h2 className="text-sm font-semibold text-white border-b border-slate-800 pb-2.5">
+                    Finale, Soundtrack &amp; Default Theme
+                  </h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {renderField('Finale Headline', 'finaleTitle', MAX_LENGTHS.finaleTitle)}
+                    {renderField('Finale Button Text', 'finaleButtonText', MAX_LENGTHS.finaleButtonText)}
+                    {renderField('Song Link Label', 'songLabel', MAX_LENGTHS.songLabel)}
+                    {renderField('Song URL (YouTube / Audio)', 'songUrl', MAX_LENGTHS.songUrl)}
+                  </div>
+
+                  <div className="pt-2 flex flex-wrap items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <p className="text-xs font-medium text-slate-200">
+                        Default Visitor Theme
+                      </p>
+                      <p className="text-[11px] text-slate-400">
+                        Sets the initial light or dark appearance for visitors.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-950 border border-slate-800">
+                      {(['dark', 'light'] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() =>
+                            setDraftContent((prev) => ({ ...prev, defaultTheme: mode }))
+                          }
+                          className={`px-3.5 py-1.5 rounded-md text-xs font-medium capitalize cursor-pointer ${
+                            draftContent.defaultTheme === mode
+                              ? 'bg-[#7251b5] text-[#f6f1fc]'
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {mode}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+              </div>
+
+              {/* Sticky Save Action Bar */}
+              <div className="sticky bottom-4 z-10 rounded-xl border border-slate-700 bg-slate-900/95 backdrop-blur-md p-3.5 flex flex-wrap items-center justify-between gap-3 shadow-2xl">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDraftContent(DEFAULT_SITE_CONTENT)}
+                    className="min-h-[38px] inline-flex items-center gap-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Load Default Copy</span>
+                  </button>
+                  {textDirty && (
+                    <button
+                      type="button"
+                      onClick={() => setDraftContent(siteContent)}
+                      className="min-h-[38px] px-3 py-1.5 text-xs text-slate-400 hover:text-white cursor-pointer"
+                    >
+                      Discard
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={savingText}
+                  className="min-h-[40px] inline-flex items-center gap-2 rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] px-5 py-2 text-xs sm:text-sm font-semibold disabled:opacity-60 cursor-pointer"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>{savingText ? 'Publishing...' : 'Save & Publish Text'}</span>
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* ---------------- ADMIN ACCESS TAB ---------------- */}
+          {activeTab === 'access' && (
+            <div className="space-y-6">
+              <div className="rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-3">
+                <h2 className="text-sm font-semibold text-white">Current Session</h2>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+                  <div>
+                    <p className="text-slate-400">Signed-in Email</p>
+                    <p className="text-slate-100 font-medium mt-0.5">{user.email}</p>
+                  </div>
+                  <div>
+                    <p className="text-slate-400">Role</p>
+                    <p className="text-slate-100 font-medium mt-0.5">
+                      {isSuperAdmin ? 'Primary Owner (Super Admin)' : 'Authorized Admin'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-slate-400">Firebase Auth UID</p>
+                    <p className="font-mono-tabular text-slate-300 mt-0.5 truncate">
+                      {user.uid}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {isSuperAdmin ? (
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                  <form
+                    onSubmit={handleGrantAdminSubmit}
+                    className="lg:col-span-5 rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-4"
+                  >
+                    <div className="space-y-1">
+                      <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                        <UserPlus className="w-4 h-4 text-[#c19ee0]" />
+                        <span>Authorize Additional Admin</span>
+                      </h3>
+                      <p className="text-xs text-slate-400">
+                        Grant dashboard access to another verified Google user by entering their Firebase Auth UID and email.
+                      </p>
+                    </div>
+
+                    <label className="block space-y-1">
+                      <span className="text-xs font-medium text-slate-300">
+                        Firebase Auth UID
+                      </span>
+                      <input
+                        type="text"
+                        required
+                        value={adminUidInput}
+                        onChange={(e) => setAdminUidInput(e.target.value)}
+                        placeholder="e.g. aBcDeFg12345..."
+                        className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-xs font-mono-tabular text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                      />
+                    </label>
+
+                    <label className="block space-y-1">
+                      <span className="text-xs font-medium text-slate-300">
+                        Google Email Address
+                      </span>
+                      <input
+                        type="email"
+                        required
+                        value={adminEmailInput}
+                        onChange={(e) => setAdminEmailInput(e.target.value)}
+                        placeholder="editor@example.com"
+                        className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                      />
+                    </label>
+
+                    <label className="block space-y-1">
+                      <span className="text-xs font-medium text-slate-300">
+                        Display Name
+                      </span>
+                      <input
+                        type="text"
+                        value={adminNameInput}
+                        onChange={(e) => setAdminNameInput(e.target.value)}
+                        placeholder="Editor Name"
+                        className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                      />
+                    </label>
+
+                    <button
+                      type="submit"
+                      disabled={grantingAdmin}
+                      className="w-full min-h-[40px] rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] text-xs font-semibold cursor-pointer disabled:opacity-60"
+                    >
+                      {grantingAdmin ? 'Authorizing...' : 'Grant Admin Access'}
+                    </button>
+                  </form>
+
+                  <div className="lg:col-span-7 rounded-xl border border-slate-800 bg-slate-900 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-slate-800">
+                      <h3 className="text-sm font-semibold text-white">
+                        Authorized Admins ({admins.length})
+                      </h3>
+                    </div>
+
+                    {admins.length === 0 ? (
+                      <div className="p-8 text-center text-xs text-slate-500">
+                        No secondary administrators added yet. You have full access as the primary owner.
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-slate-800">
+                        {admins.map((adm) => (
+                          <div
+                            key={adm.uid}
+                            className="p-4 flex items-center justify-between gap-3"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-white truncate">
+                                {adm.displayName}
+                              </p>
+                              <p className="text-xs text-slate-400 truncate">
+                                {adm.email}
+                              </p>
+                              <p className="text-[11px] font-mono-tabular text-slate-500 truncate">
+                                {adm.uid}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void onRevokeAdmin(adm.uid)}
+                              className="min-h-[34px] px-3 rounded-lg border border-slate-700 hover:bg-red-950/60 hover:border-red-800 text-xs text-slate-300 hover:text-red-300 cursor-pointer shrink-0"
+                            >
+                              Revoke
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-slate-800 bg-slate-900 p-5 text-xs text-slate-400">
+                  Only the primary kingdom owner can manage additional administrator permissions.
+                </div>
+              )}
+            </div>
+          )}
+        </main>
+      </div>
+
+      {/* Add / Upload Photo Modal */}
+      {showAddModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Add or Assign Photo"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowAddModal(false)}
+        >
+          <form
+            onSubmit={handleCreateOrAssignPhoto}
+            onClick={(e) => e.stopPropagation()}
+            className="max-w-lg w-full rounded-2xl border border-slate-800 bg-slate-900 p-6 space-y-5 shadow-2xl"
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-semibold text-white">
+                Add or Update Website Photo
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowAddModal(false)}
+                className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg hover:bg-slate-800 text-slate-400 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-slate-300">
+                  Target Location
+                </span>
+                <select
+                  value={newTargetSlot}
+                  onChange={(e) => setNewTargetSlot(e.target.value)}
+                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                >
+                  <option value="extra">Add to Extra Gallery Memories</option>
+                  {SLOT_DEFINITIONS.map((s) => (
+                    <option key={s.slotKey} value={s.slotKey}>
+                      {s.slotKey.toUpperCase()} — {s.sectionLabel} ({s.aspectHint})
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {newTargetSlot === 'extra' && (
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-slate-300">
+                    Memory Title
+                  </span>
+                  <input
+                    type="text"
+                    required
+                    maxLength={MAX_LENGTHS.sectionLabel}
+                    value={newLabel}
+                    onChange={(e) => setNewLabel(e.target.value)}
+                    placeholder="e.g. Golden Hour Walk"
+                    className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                  />
+                </label>
+              )}
+
+              <div className="space-y-2">
+                <span className="block text-xs font-medium text-slate-300">
+                  Upload Image File (Auto-compressed)
+                </span>
+                <label className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-950/60 p-5 text-center cursor-pointer hover:border-[#c19ee0] transition-colors">
+                  {newImageData ? (
+                    <div className="space-y-2 w-full">
+                      <img
+                        src={newImageData}
+                        alt="Upload preview"
+                        className="h-36 mx-auto rounded-lg object-cover"
+                      />
+                      {newImageSizeLabel && (
+                        <p className="text-[11px] font-mono-tabular text-emerald-400">
+                          Ready · {newImageSizeLabel}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <Upload className="w-6 h-6 text-slate-400 mb-2" />
+                      <span className="text-xs font-medium text-slate-200">
+                        Click to choose photo from device
+                      </span>
+                      <span className="text-[11px] text-slate-500 mt-0.5">
+                        JPEG, PNG, or WebP
+                      </span>
+                    </>
+                  )}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) void handleNewModalFile(file);
+                    }}
+                  />
+                </label>
+              </div>
+
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                  <LinkIcon className="w-3.5 h-3.5" />
+                  <span>Or Paste Direct Image URL (Optional)</span>
+                </span>
+                <input
+                  type="url"
+                  value={newImageUrlInput}
+                  onChange={(e) => {
+                    setNewImageUrlInput(e.target.value);
+                    if (e.target.value) {
+                      setNewImageData('');
+                      setNewImageSizeLabel(null);
+                    }
+                  }}
+                  placeholder="https://..."
+                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                />
+              </label>
+
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-slate-300">
+                  Caption (Optional)
+                </span>
+                <input
+                  type="text"
+                  maxLength={MAX_LENGTHS.caption}
+                  value={newCaption}
+                  onChange={(e) => setNewCaption(e.target.value)}
+                  placeholder="A short note shown in lightbox..."
+                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                />
+              </label>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowAddModal(false)}
+                className="min-h-[40px] px-4 py-2 rounded-lg border border-slate-700 text-xs font-medium text-slate-300 hover:bg-slate-800 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={submittingNewPhoto}
+                className="min-h-[40px] px-5 py-2 rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] text-xs font-semibold disabled:opacity-60 cursor-pointer"
+              >
+                {submittingNewPhoto ? 'Publishing...' : 'Publish Photo'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+};

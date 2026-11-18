@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" style="color-scheme: dark;"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The Princess Kingdom</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&amp;display=swap" rel="stylesheet">
+<style>
+:root{--bg:#a28c72;--cream:#d8c7a6;--wine:#6b0f1f;--deep:#4a0610;--oc:#6b0f1f;--ow:#f0e0c4;--soft:#8a5a4a;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#2a211a;--cream:#4a3a2c;--wine:#5c0d1b;--deep:#3a050d;--oc:#f0dfc0;--soft:#cdb08f}}
+:root[data-theme="dark"]{--bg:#2a211a;--cream:#4a3a2c;--wine:#5c0d1b;--deep:#3a050d;--oc:#f0dfc0;--soft:#cdb08f}
+html{scroll-padding-top:env(safe-area-inset-top,0px);scroll-behavior:smooth}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);font-family:'Montserrat',system-ui,sans-serif;color:var(--oc);overflow-x:hidden}
+.wrap{max-width:520px;margin:0 auto;padding:18px 14px 60px;display:flex;flex-direction:column;gap:16px}
+.rv{opacity:0;transform:translateY(26px);transition:opacity .8s,transform .8s}.rv.on{opacity:1;transform:none}
+.nav{background:var(--wine);color:var(--ow);border-radius:999px;padding:8px 10px;display:flex;align-items:center;justify-content:space-between;gap:8px;position:sticky;top:calc(env(safe-area-inset-top,0px) + 8px);z-index:5;box-shadow:0 6px 16px rgba(0,0,0,.25)}
+.ic{width:38px;height:38px;border:2px solid var(--ow);border-radius:50%;display:grid;place-items:center;font-size:17px;flex:none}
+.nav .l{font-size:10px;line-height:1.3;text-align:left;min-width:0}.nav b{font-size:11px;display:block}
+.card{background:var(--cream);border-radius:34px;padding:12px}
+.ph{display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,var(--wine),var(--deep));color:var(--ow);font-size:12px;text-align:center;cursor:pointer;overflow:hidden;position:relative}
+.ph img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.ph input{display:none}
+.banner{height:300px;border-radius:24px;position:relative;overflow:hidden}
+.banner .ph{position:absolute;inset:0}
+.mini{position:absolute;left:12px;bottom:12px;width:104px;height:120px;background:var(--wine);border-radius:22px;padding:7px;z-index:2}
+.mini .ph{width:100%;height:100%;border-radius:15px}
+.mini i{position:absolute;right:6px;bottom:4px;font-style:normal;font-size:22px}
+.pill{position:absolute;right:10px;bottom:12px;background:var(--deep);color:var(--ow);border-radius:22px;padding:8px 12px 8px 8px;display:flex;gap:9px;align-items:center;z-index:2;font-size:11px}
+.pill .ph{width:36px;height:36px;border-radius:9px}.pill b{display:block;font-size:12px}
+.hl{display:flex;gap:12px;margin:16px 4px 4px;align-items:center}
+.hl .ph{width:64px;height:64px;border-radius:50%;flex:none}
+.bio{padding:6px 10px 8px;text-align:left}
+.bio h2{margin:0 0 6px;font-size:20px;color:var(--wine)}
+:root[data-theme="dark"] .bio h2{color:#e8a0a8}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .bio h2{color:#e8a0a8}}
+.bio p{margin:0;font-size:12.5px;line-height:1.65;color:var(--oc)}
+.row{display:grid;grid-template-columns:1fr 1.15fr;gap:12px}
+.fr{background:var(--cream);border-radius:22px;padding:9px}
+.fr .ph{width:100%;height:100%;min-height:230px;border-radius:15px}
+.wine{background:var(--wine);color:var(--ow);border-radius:24px;padding:10px;display:flex;flex-direction:column;gap:10px}
+.in{background:var(--cream);color:var(--oc);border-radius:18px;padding:14px 12px;text-align:left}
+.in h3{margin:0 0 4px;font-size:16px}.in small{font-size:11px;opacity:.8}
+.st{display:flex;gap:14px;margin-top:10px;font-size:11px}.st b{display:block;font-size:14px}
+.bt{display:flex;gap:6px}.bt span{flex:1;background:#f3ece0;color:var(--wine);border-radius:9px;padding:8px 2px;font-size:10px;font-weight:600;text-align:center}
+.tk{text-align:center;padding:8px 0}
+.av{width:92px;height:92px;border-radius:50%;border:4px solid var(--wine);margin:0 auto 8px;background:var(--cream)}
+.av.ph{border:4px solid var(--wine)}
+.tk .h{color:var(--wine);font-weight:700;font-size:15px}
+:root[data-theme="dark"] .tk .h{color:#e8a0a8}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .tk .h{color:#e8a0a8}}
+.tk .s{display:flex;justify-content:center;gap:26px;margin-top:10px;font-size:11px;color:var(--oc)}.tk .s b{display:block;font-size:16px}
+.pin{background:var(--wine);border-radius:30px;padding:12px}
+.pin .bg{height:290px;border-radius:20px;position:relative;overflow:hidden;color:#fff;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;padding-bottom:16px}
+.pin .bg>.ph{position:absolute;inset:0}
+.pin .bg>*:not(.ph){position:relative;z-index:1;text-shadow:0 2px 8px rgba(0,0,0,.6)}
+.pin .av{border-color:#fff;position:absolute;top:22px;z-index:1;width:104px;height:104px}
+.pin h3{margin:0;font-size:24px}.pin small{font-size:12px}
+.sb{background:var(--wine);color:var(--ow);border-radius:999px;padding:7px 12px 7px 8px;display:flex;align-items:center;gap:10px;font-weight:600;font-size:13px;margin-bottom:10px}
+.gr{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.gr .ph{border-radius:14px;height:170px}.gr .ph.t{height:230px;grid-row:span 2}
+.letter{background:var(--wine);color:var(--ow);border-radius:30px;padding:26px 22px;text-align:left;line-height:1.8;font-size:14px}
+.letter h2{margin:0 0 12px;font-size:20px}
+.fin{text-align:center;padding:40px 10px}
+.fin h2{font-size:28px;line-height:1.3;margin:10px 0 18px;color:var(--ow)}
+.btn{background:var(--wine);color:var(--ow);border:2px solid var(--ow);border-radius:999px;padding:13px 28px;font:700 14px 'Montserrat',sans-serif;cursor:pointer}
+.heart{position:fixed;bottom:-30px;pointer-events:none;animation:rise 4s linear forwards;z-index:9}
+@keyframes rise{to{transform:translateY(-110vh);opacity:0}}
+
+.ph{font-size:22px}
+.mus{position:absolute;right:6px;bottom:4px;font-size:22px;text-decoration:none;z-index:3}
+.song{display:inline-block;margin-top:14px;color:var(--ow);font-weight:700;font-size:13px;text-decoration:none;border-bottom:2px solid var(--ow);padding-bottom:2px}
+#bar{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--deep);color:var(--ow);padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px));display:none;gap:8px;align-items:center;font-size:12px;box-shadow:0 -6px 18px rgba(0,0,0,.3)}
+#bar input{flex:1;min-width:0;border:0;border-radius:999px;padding:9px 14px;font:600 13px 'Montserrat',sans-serif;background:var(--cream);color:var(--oc)}
+#bar button{border:0;border-radius:999px;padding:10px 16px;background:var(--ow);color:var(--wine);font:700 12px 'Montserrat',sans-serif;cursor:pointer;white-space:nowrap}
+#bar span{flex-basis:100%;text-align:center;opacity:.85}
+#bar{flex-wrap:wrap}
+</style>
+<style>artifact-sync,artifact-local{display:contents}</style></head>
+<body data-new-gr-c-s-check-loaded="8.937.0" data-gr-ext-installed="">
+<div class="wrap">
+
+<div class="nav rv">
+  <div class="ic">👑</div>
+  <div class="l"><b class="nm">Princess</b>Kingdom Account</div>
+  <div class="l"><b class="hd">@nusratjahan_bushra</b>Instagram</div>
+  <div class="l"><b class="hd2">princess12</b>TikTok</div>
+  <div class="ic">🔍</div>
+</div>
+
+<div class="card rv">
+  <div class="banner">
+    <label class="ph" data-slot="s0"></label>
+    <div class="mini"><label class="ph" data-slot="s1"></label><a class="mus" href="https://youtu.be/blQLxdHb-MY" target="_blank" rel="noopener">🎵</a></div>
+    <div class="pill"><label class="ph" data-slot="s2"></label><div><b class="nm">Princess</b>Kingdom Account</div></div>
+  </div>
+  <div class="hl">
+    <label class="ph" data-slot="s3"></label>
+    <label class="ph" data-slot="s4"></label>
+    <label class="ph" data-slot="s5"></label>
+  </div>
+  <div class="bio">
+    <h2 class="nm">Princess</h2>
+    <p>Once upon a time, a girl was born with a smile that could light up a whole kingdom. Wherever she walked, ordinary days turned into small adventures, and every little moment felt like magic. This is her kingdom, and I am the lucky one who gets to be in it.</p>
+  </div>
+</div>
+
+<div class="row rv">
+  <div class="fr"><label class="ph" data-slot="s6"></label></div>
+  <div class="wine">
+    <div class="in">
+      <h3 class="nm">Princess</h3>
+      <small><b>∞</b> friends</small>
+      <div class="st"><div><b>999+</b>memories</div><div><b>1</b>follower (me)</div><div><b>1</b>following (you)</div></div>
+    </div>
+    <div class="bt"><span>Send a hug</span><span>Share love</span></div>
+  </div>
+</div>
+
+<div class="card tk rv">
+  <label class="ph av" data-slot="s7"></label>
+  <div class="h hd">@nusratjahan_bushra</div>
+  <div class="s"><div><b>∞</b>Hugs</div><div><b>∞</b>Smiles</div><div><b>1,000,000</b>Likes</div></div>
+</div>
+
+<div class="pin rv">
+  <div class="bg">
+    <label class="ph" data-slot="s8"></label>
+    <label class="ph av" data-slot="s9"></label>
+    <div style="margin-top:104px"></div>
+    <h3 class="nm">Princess</h3>
+    <small>my queen · she/her</small>
+    <small style="margin-top:6px">1 follower: me · 0 following: she needs no one 👑</small>
+  </div>
+</div>
+
+<div class="card rv">
+  <div class="sb"><div class="ic" style="width:30px;height:30px;font-size:13px">👑</div><span class="nm">Princess</span></div>
+  <div class="gr">
+    <label class="ph t" data-slot="s10"></label>
+    <label class="ph" data-slot="s11"></label>
+    <label class="ph" data-slot="s12"></label>
+    <label class="ph t" data-slot="s13"></label>
+  </div>
+</div>
+
+<div class="letter rv">
+  <h2>A letter for you 💌</h2>
+  My dear <span class="nm">Princess</span>,<br><br>
+  Every day with you feels like a fairytale. You make ordinary moments magical, and your smile is my favorite place to be.<br><br>
+  Thank you for being you. I will always be your biggest fan, your safe place, and your happily ever after.<br><br>
+  Love always ❤️
+</div>
+
+<div class="fin rv">
+  <div style="font-size:64px">👑</div>
+  <h2>You are my princess,<br>today and always.</h2>
+  <button class="btn" id="love">Tap for love 💖</button><br><a class="song" href="https://youtu.be/blQLxdHb-MY" target="_blank" rel="noopener">🎵 Play our song</a>
+</div>
+
+</div>
+
+<script type="application/json" id="state">{"name":"Princess","handle":"nusratjahan_bushra","slots":{"s2":"95090e1a722a4cf531c9c49b64535f90"}}</script>
+<script>
+var state = {name:"Bushra",handle:"nusratjahan_bushra",slots:{}};
+try{ state = JSON.parse(document.getElementById('state').textContent) }catch(e){}
+var phs = Array.prototype.slice.call(document.querySelectorAll('.ph'));
+phs.forEach(function(p,i){p.dataset.slot='s'+i});
+
+function applyName(){
+  var N = state.name || 'Princess', H = N.toLowerCase().replace(/\s+/g,'.');
+  document.querySelectorAll('.nm').forEach(function(e){e.textContent=N});
+  document.querySelectorAll('.hd').forEach(function(e){e.textContent='@'+(state.handle||H)});
+  document.querySelectorAll('.hd2').forEach(function(e){e.textContent=H+'12'});
+}
+function showImg(p,url){
+  var old=p.querySelector('img'); if(old) old.remove();
+  var im=document.createElement('img'); im.src=url; im.alt=''; p.appendChild(im);
+  var t=p.querySelector('.t0'); if(t) t.style.display='none';
+}
+function render(){
+  applyName();
+  phs.forEach(function(p){
+    if(!p.querySelector('.t0')){p.textContent='';var t=document.createElement('span');t.className='t0';t.textContent='👑';p.appendChild(t)}
+    var id=state.slots[p.dataset.slot];
+    if(id) showImg(p,'/_blob/'+id);
+  });
+}
+render();
+
+var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting)e.target.classList.add('on')})},{threshold:.15});
+document.querySelectorAll('.rv').forEach(function(e){io.observe(e)});
+
+document.getElementById('love').onclick=function(){
+  var set=['💖','💕','👑','✨','💗','🌹'];
+  for(var i=0;i<20;i++){(function(i){setTimeout(function(){
+    var h=document.createElement('div');h.className='heart';
+    h.textContent=set[Math.floor(Math.random()*set.length)];
+    h.style.left=Math.random()*94+'vw';h.style.fontSize=(18+Math.random()*22)+'px';
+    document.body.appendChild(h);setTimeout(function(){h.remove()},4000);
+  },i*110)})(i)}
+};
+
+/* ---- storage: owner/editor mode ---- */
+var assets=null, artifact=null, dirty=false;
+var bar=document.getElementById('bar'), msg=document.getElementById('msg'), nameIn=document.getElementById('nameIn');
+
+function shrink(file){
+  return new Promise(function(res){
+    var im=new Image(), u=URL.createObjectURL(file);
+    im.onload=function(){
+      var m=1600,r=Math.min(1,m/Math.max(im.width,im.height));
+      var c=document.createElement('canvas');c.width=Math.round(im.width*r);c.height=Math.round(im.height*r);
+      c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+      c.toBlob(function(b){URL.revokeObjectURL(u);res(b||file)},'image/jpeg',.85);
+    };
+    im.onerror=function(){res(file)};
+    im.src=u;
+  });
+}
+function enableEdit(){
+  if(!assets||!artifact) return;
+  bar.style.display='flex';
+  document.body.style.paddingBottom='90px';
+  nameIn.value=state.name||'';
+  nameIn.oninput=function(){state.name=nameIn.value.trim()||'Princess';dirty=true;applyName()};
+  phs.forEach(function(p){
+    var inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.style.display='none';
+    p.appendChild(inp);
+    if(!state.slots[p.dataset.slot]){var t=p.querySelector('.t0');if(t)t.textContent='＋'}
+    inp.onchange=async function(){
+      var f=inp.files[0];if(!f)return;
+      msg.textContent='Uploading…';
+      try{
+        var b=await shrink(f);
+        var r=await assets.upload(b);
+        state.slots[p.dataset.slot]=r.id;dirty=true;
+        showImg(p,r.url||('/_blob/'+r.id));
+        msg.textContent='Added. Add more, then tap Save & publish.';
+      }catch(e){msg.textContent='Upload failed. Try a smaller photo.'}
+      inp.value='';
+    };
+  });
+}
+document.getElementById('save').onclick=async function(){
+  if(!artifact) return;
+  msg.textContent='Saving…';
+  var c=document.documentElement.cloneNode(true);
+  var b=c.querySelector('#bar'); if(b) b.remove();
+  c.querySelectorAll('.ph img,.ph input,.heart').forEach(function(e){e.remove()});
+  c.querySelectorAll('.on').forEach(function(e){e.classList.remove('on')});
+  c.querySelectorAll('.ph').forEach(function(e){e.textContent=''});
+  var st=c.querySelector('#state'); st.textContent=JSON.stringify(state);
+  c.querySelector('body').removeAttribute('style');
+  try{ await artifact.publish('<!DOCTYPE html>\n'+c.outerHTML); dirty=false; msg.textContent='Saved ✓' }
+  catch(e){ msg.textContent='Could not save ('+(e&&e.code?e.code:'error')+'). Try again.' }
+};
+(async function(){
+  try{
+    if(window.claude&&claude.use){
+      assets=await claude.use('assets');
+      artifact=await claude.use('artifact');
+      enableEdit();
+    }
+  }catch(e){}
+})();
+</script>
+
+
+</body><grammarly-desktop-integration data-grammarly-shadow-root="true"></grammarly-desktop-integration></html>
