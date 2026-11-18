@@ -1,10 +1,22 @@
-import { MAX_LENGTHS } from '../types/kingdom';
+import { MAX_LENGTHS, type PhotoItem } from '../types/kingdom';
+
+export const MAX_VIDEO_RAW_BYTES = 9 * 1024 * 1024;
+const VIDEO_CHUNK_CHAR_SIZE = 650000;
 
 export interface CompressedImageResult {
   dataUrl: string;
   byteLength: number;
   width: number;
   height: number;
+}
+
+export interface ProcessedVideoResult {
+  videoDataUrl: string;
+  posterDataUrl: string;
+  mimeType: string;
+  byteLength: number;
+  chunks: string[];
+  inlineVideoData?: string;
 }
 
 /**
@@ -73,18 +85,199 @@ export async function compressImageFile(file: File): Promise<CompressedImageResu
   }
 }
 
+export function generateFallbackVideoPoster(): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 480"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#9163cb"/><stop offset="100%" stop-color="#352063"/></linearGradient></defs><rect width="640" height="480" fill="url(#g)"/><circle cx="320" cy="240" r="56" fill="rgba(246,241,252,0.18)" stroke="#f6f1fc" stroke-width="3"/><polygon points="304,212 354,240 304,268" fill="#f6f1fc"/></svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+async function captureVideoPoster(objectUrl: string): Promise<string> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'metadata';
+
+    let settled = false;
+    const finish = (poster: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      video.removeAttribute('src');
+      video.load();
+      resolve(poster);
+    };
+
+    const timer = window.setTimeout(() => {
+      finish(generateFallbackVideoPoster());
+    }, 3500);
+
+    const captureFrame = () => {
+      try {
+        const vw = video.videoWidth || 640;
+        const vh = video.videoHeight || 360;
+        const scale = Math.min(1, 720 / Math.max(vw, vh));
+        const width = Math.max(1, Math.round(vw * scale));
+        const height = Math.max(1, Math.round(vh * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          finish(generateFallbackVideoPoster());
+          return;
+        }
+        ctx.drawImage(video, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
+        if (dataUrl && dataUrl.length < MAX_LENGTHS.imageData) {
+          finish(dataUrl);
+        } else {
+          finish(generateFallbackVideoPoster());
+        }
+      } catch {
+        finish(generateFallbackVideoPoster());
+      }
+    };
+
+    video.onloadeddata = () => {
+      if (video.duration && video.duration > 0.25) {
+        video.currentTime = Math.min(0.3, video.duration * 0.1);
+      } else {
+        captureFrame();
+      }
+    };
+
+    video.onseeked = () => captureFrame();
+    video.onerror = () => finish(generateFallbackVideoPoster());
+    video.src = objectUrl;
+  });
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Unable to read the selected video file.'));
+      }
+    };
+    reader.onerror = () => reject(new Error('Failed to read video file from device.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+export function isVideoFile(file: File): boolean {
+  if (file.type.startsWith('video/')) return true;
+  return /\.(mp4|webm|mov|m4v|ogg|ogv)$/i.test(file.name);
+}
+
+export async function processVideoFile(file: File): Promise<ProcessedVideoResult> {
+  if (file.size > MAX_VIDEO_RAW_BYTES) {
+    throw new Error(
+      `Video "${file.name}" is ${formatBytes(file.size)}. Please choose a clip under 9 MB or paste a direct video URL.`
+    );
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const [posterDataUrl, videoDataUrl] = await Promise.all([
+      captureVideoPoster(objectUrl),
+      readFileAsDataUrl(file),
+    ]);
+
+    const mimeType = (file.type || 'video/mp4').slice(0, MAX_LENGTHS.mimeType);
+
+    if (videoDataUrl.length <= MAX_LENGTHS.videoData) {
+      return {
+        videoDataUrl,
+        posterDataUrl,
+        mimeType,
+        byteLength: file.size,
+        chunks: [],
+        inlineVideoData: videoDataUrl,
+      };
+    }
+
+    const chunks: string[] = [];
+    for (let offset = 0; offset < videoDataUrl.length; offset += VIDEO_CHUNK_CHAR_SIZE) {
+      chunks.push(videoDataUrl.slice(offset, offset + VIDEO_CHUNK_CHAR_SIZE));
+    }
+
+    if (chunks.length > MAX_LENGTHS.maxVideoChunks) {
+      throw new Error(
+        `Video "${file.name}" exceeds the maximum encoded size. Please use a shorter clip or paste a direct video URL.`
+      );
+    }
+
+    return {
+      videoDataUrl,
+      posterDataUrl,
+      mimeType,
+      byteLength: file.size,
+      chunks,
+    };
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+export function isVideoItem(
+  item?: Pick<PhotoItem, 'mediaType' | 'videoData' | 'chunkCount' | 'imageData'> | null
+): boolean {
+  if (!item) return false;
+  if (item.mediaType === 'video') return true;
+  if ((item.chunkCount ?? 0) > 0) return true;
+  if (item.videoData && item.videoData.trim().length > 0) return true;
+  return isDirectVideoUrl(item.imageData);
+}
+
+export function isDirectVideoUrl(value: string): boolean {
+  const trimmed = (value || '').trim().toLowerCase();
+  if (!trimmed) return false;
+  if (trimmed.startsWith('data:video/')) return true;
+  return /\.(mp4|webm|mov|m4v|ogg|ogv)(\?.*)?$/i.test(trimmed);
+}
+
+export function getYouTubeEmbedUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url.trim());
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    let videoId: string | null = null;
+    if (host === 'youtu.be') {
+      videoId = parsed.pathname.slice(1).split('/')[0] || null;
+    } else if (host === 'youtube.com' || host === 'm.youtube.com') {
+      if (parsed.pathname.startsWith('/shorts/')) {
+        videoId = parsed.pathname.split('/')[2] || null;
+      } else if (parsed.pathname.startsWith('/embed/')) {
+        videoId = parsed.pathname.split('/')[2] || null;
+      } else {
+        videoId = parsed.searchParams.get('v');
+      }
+    }
+    if (!videoId || !/^[a-zA-Z0-9_-]{6,20}$/.test(videoId)) return null;
+    return `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0`;
+  } catch {
+    return null;
+  }
+}
+
 export function isValidImageInput(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > MAX_LENGTHS.imageData) return false;
   return (
     trimmed.startsWith('data:image/') ||
+    trimmed.startsWith('data:video/') ||
     trimmed.startsWith('https://') ||
     trimmed.startsWith('http://') ||
     trimmed.startsWith('/')
   );
 }
 
-export function formatBytes(chars: number): string {
-  const kb = Math.max(1, Math.round(chars / 1024));
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  const kb = Math.max(1, Math.round(bytes / 1024));
   return `${kb} KB`;
 }

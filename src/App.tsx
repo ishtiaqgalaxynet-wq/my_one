@@ -34,6 +34,8 @@ function KingdomApp() {
     saveSiteContent,
     savePhotoSlot,
     addExtraPhoto,
+    addExtraMediaBatch,
+    loadVideoSource,
     togglePhotoStatus,
     deletePhoto,
     grantAdminAccess,
@@ -148,6 +150,7 @@ function KingdomApp() {
           onSaveSiteContent={saveSiteContent}
           onSavePhotoSlot={savePhotoSlot}
           onAddExtraPhoto={addExtraPhoto}
+          onAddExtraMediaBatch={addExtraMediaBatch}
           onTogglePhotoStatus={togglePhotoStatus}
           onDeletePhoto={deletePhoto}
           onGrantAdmin={grantAdminAccess}
@@ -188,6 +191,7 @@ function KingdomApp() {
         }
         isAdmin={isAdmin}
         onOpenAdmin={() => navigateTo('admin')}
+        onLoadVideoSource={loadVideoSource}
       />
     );
   })();

@@ -219,7 +219,7 @@
     },
     "PhotoItem": {
       "title": "PhotoItem",
-      "description": "A single photo slot or extra gallery memory stored as a compressed data URL or external HTTPS URL.",
+      "description": "A single gallery photo or video slot stored as a compressed image data URL, inline video data URL, chunked video metadata, or external HTTPS URL.",
       "type": "object",
       "properties": {
         "slotKey": {
@@ -236,36 +236,55 @@
         },
         "imageData": {
           "type": "string",
-          "description": "Compressed base64 image data URI or HTTPS image URL.",
+          "description": "Compressed base64 image/poster data URI or HTTPS URL.",
           "minLength": 1,
           "maxLength": 800000
         },
         "caption": {
           "type": "string",
-          "description": "Optional photo caption or alt description.",
+          "description": "Optional photo or video caption or alt description.",
           "maxLength": 200
         },
         "isExtra": {
           "type": "boolean",
-          "description": "True for admin-added extra gallery photos beyond the 14 base slots."
+          "description": "True for admin-added extra gallery items beyond the 14 base slots."
         },
         "status": {
           "type": "string",
-          "description": "Visibility status of the photo.",
+          "description": "Visibility status of the media item.",
           "enum": ["published", "hidden"]
         },
         "sortOrder": {
           "type": "integer",
           "description": "Display ordering index."
         },
+        "mediaType": {
+          "type": "string",
+          "description": "Media kind ('image' or 'video'). Defaults to 'image' when omitted.",
+          "enum": ["image", "video"]
+        },
+        "videoData": {
+          "type": "string",
+          "description": "Optional inline video data URI (for compact clips) or HTTPS video URL.",
+          "maxLength": 750000
+        },
+        "chunkCount": {
+          "type": "integer",
+          "description": "Number of ordered chunks stored under /photos/{photoId}/chunks for larger uploaded videos."
+        },
+        "mimeType": {
+          "type": "string",
+          "description": "MIME type of the uploaded media item (e.g. video/mp4).",
+          "maxLength": 80
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
-          "description": "Server timestamp when the photo was uploaded or modified."
+          "description": "Server timestamp when the media item was uploaded or modified."
         },
         "updatedByUid": {
           "type": "string",
-          "description": "UID of the admin who uploaded or modified the photo.",
+          "description": "UID of the admin who uploaded or modified the media item.",
           "minLength": 1,
           "maxLength": 128
         }
@@ -278,6 +297,40 @@
         "isExtra",
         "status",
         "sortOrder",
+        "updatedAt",
+        "updatedByUid"
+      ]
+    },
+    "MediaChunk": {
+      "title": "MediaChunk",
+      "description": "An ordered base64 slice of a larger uploaded gallery video stored under a parent PhotoItem.",
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "description": "Zero-based chunk sequence index (0..20)."
+        },
+        "data": {
+          "type": "string",
+          "description": "Base64 substring slice of the video data URL.",
+          "minLength": 1,
+          "maxLength": 700000
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the chunk was uploaded."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "description": "UID of the admin who uploaded the chunk.",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "index",
+        "data",
         "updatedAt",
         "updatedByUid"
       ]
@@ -344,7 +397,13 @@
       "schema": {
         "$ref": "#/entities/PhotoItem"
       },
-      "description": "Stores each photo slot (s0-s13) and admin-added extra gallery photos."
+      "description": "Stores each photo/video slot (s0-s13) and admin-added extra gallery photos and videos."
+    },
+    "/photos/{photoId}/chunks/{chunkId}": {
+      "schema": {
+        "$ref": "#/entities/MediaChunk"
+      },
+      "description": "Stores ordered video data chunks for larger gallery videos."
     },
     "/admins/{adminUid}": {
       "schema": {

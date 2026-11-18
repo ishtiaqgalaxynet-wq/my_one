@@ -96,7 +96,8 @@ service cloud.firestore {
       ]) &&
       data.keys().hasOnly([
         'slotKey', 'sectionLabel', 'imageData', 'caption',
-        'isExtra', 'status', 'sortOrder', 'updatedAt', 'updatedByUid'
+        'isExtra', 'status', 'sortOrder', 'updatedAt', 'updatedByUid',
+        'mediaType', 'videoData', 'chunkCount', 'mimeType'
       ]) &&
       data.slotKey is string && data.slotKey.size() >= 1 && data.slotKey.size() <= 64 &&
       data.sectionLabel is string && data.sectionLabel.size() >= 1 && data.sectionLabel.size() <= 80 &&
@@ -105,6 +106,24 @@ service cloud.firestore {
       data.isExtra is bool &&
       data.status in ['published', 'hidden'] &&
       data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 10000 &&
+      (!('mediaType' in data) || data.mediaType in ['image', 'video']) &&
+      (!('videoData' in data) || (data.videoData is string && data.videoData.size() <= 750000)) &&
+      (!('chunkCount' in data) || (data.chunkCount is int && data.chunkCount >= 0 && data.chunkCount <= 20)) &&
+      (!('mimeType' in data) || (data.mimeType is string && data.mimeType.size() <= 80)) &&
+      data.updatedAt == request.time &&
+      data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
+      data.updatedByUid == request.auth.uid;
+    }
+
+    function isValidMediaChunk(data) {
+      return data.keys().hasAll([
+        'index', 'data', 'updatedAt', 'updatedByUid'
+      ]) &&
+      data.keys().hasOnly([
+        'index', 'data', 'updatedAt', 'updatedByUid'
+      ]) &&
+      data.index is int && data.index >= 0 && data.index <= 20 &&
+      data.data is string && data.data.size() >= 1 && data.data.size() <= 700000 &&
       data.updatedAt == request.time &&
       data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 &&
       data.updatedByUid == request.auth.uid;
@@ -150,7 +169,7 @@ service cloud.firestore {
       allow delete: if isValidId(docId) && isBootstrapAdmin();
     }
 
-    // Photo slots & extra gallery items
+    // Photo & video slots & extra gallery items
     match /photos/{photoId} {
       allow get: if isValidId(photoId) && (existing().status == 'published' || isAdmin());
       allow list: if resource.data.status == 'published' || isBootstrapAdmin();
@@ -159,9 +178,29 @@ service cloud.firestore {
         incoming().slotKey == existing().slotKey &&
         incoming().isExtra == existing().isExtra &&
         incoming().diff(existing()).affectedKeys().hasOnly([
-          'sectionLabel', 'imageData', 'caption', 'status', 'sortOrder', 'updatedAt', 'updatedByUid'
+          'sectionLabel', 'imageData', 'caption', 'status', 'sortOrder',
+          'mediaType', 'videoData', 'chunkCount', 'mimeType',
+          'updatedAt', 'updatedByUid'
         ]);
       allow delete: if isValidId(photoId) && isAdmin();
+
+      // Chunked video slices gated by parent photo visibility & existence
+      match /chunks/{chunkId} {
+        allow get: if isValidId(photoId) && isValidId(chunkId) && (
+          get(/databases/$(database)/documents/photos/$(photoId)).data.status == 'published' ||
+          isAdmin()
+        );
+        allow create: if isValidId(photoId) && isValidId(chunkId) && isAdmin() &&
+          exists(/databases/$(database)/documents/photos/$(photoId)) &&
+          isValidMediaChunk(incoming());
+        allow update: if isValidId(photoId) && isValidId(chunkId) && isAdmin() &&
+          exists(/databases/$(database)/documents/photos/$(photoId)) &&
+          isValidMediaChunk(incoming()) &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'index', 'data', 'updatedAt', 'updatedByUid'
+          ]);
+        allow delete: if isValidId(photoId) && isValidId(chunkId) && isAdmin();
+      }
     }
 
     // Authorized admin list (PII protected)

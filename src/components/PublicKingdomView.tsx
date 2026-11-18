@@ -1,9 +1,11 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Crown,
   Heart,
+  Loader2,
   Moon,
   Music,
+  Play,
   Share2,
   Sun,
   X,
@@ -12,6 +14,7 @@ import {
   FloatingHeartsOverlay,
   type FloatingBurstParticle,
 } from './FloatingHeartsOverlay';
+import { getYouTubeEmbedUrl, isVideoItem } from '../lib/imageUtils';
 import { type PhotoItem, type SiteContent, type ThemeMode } from '../types/kingdom';
 
 interface PublicKingdomViewProps {
@@ -21,6 +24,7 @@ interface PublicKingdomViewProps {
   onToggleTheme: () => void;
   isAdmin: boolean;
   onOpenAdmin: () => void;
+  onLoadVideoSource: (photo: PhotoItem) => Promise<string>;
 }
 
 export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
@@ -30,6 +34,7 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
   onToggleTheme,
   isAdmin,
   onOpenAdmin,
+  onLoadVideoSource,
 }) => {
   const [particles, setParticles] = useState<FloatingBurstParticle[]>([]);
   const [ambientHeartsEnabled, setAmbientHeartsEnabled] = useState<boolean>(() => {
@@ -43,12 +48,58 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [hugCount, setHugCount] = useState<number>(0);
   const [lightboxPhoto, setLightboxPhoto] = useState<PhotoItem | null>(null);
+  const [lightboxVideoSrc, setLightboxVideoSrc] = useState<string | null>(null);
+  const [lightboxVideoLoading, setLightboxVideoLoading] = useState(false);
+  const [lightboxVideoError, setLightboxVideoError] = useState<string | null>(null);
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!lightboxPhoto || !isVideoItem(lightboxPhoto)) {
+      setLightboxVideoSrc(null);
+      setLightboxVideoLoading(false);
+      setLightboxVideoError(null);
+      return;
+    }
+
+    setLightboxVideoLoading(true);
+    setLightboxVideoError(null);
+    setLightboxVideoSrc(null);
+
+    onLoadVideoSource(lightboxPhoto)
+      .then((src) => {
+        if (!cancelled) {
+          setLightboxVideoSrc(src);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setLightboxVideoError(
+            err instanceof Error ? err.message : 'Unable to load this video.'
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLightboxVideoLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [lightboxPhoto, onLoadVideoSource]);
 
   const publishedPhotos = useMemo(
     () => photos.filter((p) => p.status === 'published'),
     [photos]
   );
+
+  const videoCount = useMemo(
+    () => publishedPhotos.filter((p) => isVideoItem(p)).length,
+    [publishedPhotos]
+  );
+  const photoCount = publishedPhotos.length - videoCount;
 
   const slotMap = useMemo(() => {
     const map = new Map<string, PhotoItem>();
@@ -126,25 +177,44 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
     fallbackIcon: React.ReactNode = <Crown className="w-5 h-5 opacity-80" />
   ) => {
     const item = slotMap.get(slotKey);
-    const hasValidImage = item && item.imageData && !failedImages[item.id];
+    const isVideo = isVideoItem(item);
+    const hasValidMedia = item && (item.imageData || isVideo) && !failedImages[item.id];
+    const hasPosterImage = Boolean(item?.imageData && !item.imageData.startsWith('data:video/') && !failedImages[item.id]);
 
     return (
       <button
         type="button"
-        onClick={() => hasValidImage && setLightboxPhoto(item)}
-        aria-label={item?.caption || item?.sectionLabel || `${content.displayName} photo`}
+        onClick={() => hasValidMedia && item && setLightboxPhoto(item)}
+        aria-label={item?.caption || item?.sectionLabel || `${content.displayName} media`}
         className={`relative overflow-hidden flex items-center justify-center bg-gradient-to-br from-[#9163cb] to-[#6247aa] text-[#f6f1fc] transition-transform duration-200 ${
-          hasValidImage ? 'cursor-pointer hover:scale-[1.015]' : 'cursor-default'
+          hasValidMedia ? 'cursor-pointer hover:scale-[1.015]' : 'cursor-default'
         } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--kingdom-ivory)] ${className}`}
       >
-        {hasValidImage ? (
-          <img
-            src={item.imageData}
-            alt={item.caption || item.sectionLabel}
-            referrerPolicy="no-referrer"
-            onError={() => setFailedImages((prev) => ({ ...prev, [item.id]: true }))}
-            className="absolute inset-0 w-full h-full object-cover"
-          />
+        {hasValidMedia && item ? (
+          <>
+            {hasPosterImage ? (
+              <img
+                src={item.imageData}
+                alt={item.caption || item.sectionLabel}
+                referrerPolicy="no-referrer"
+                onError={() => setFailedImages((prev) => ({ ...prev, [item.id]: true }))}
+                className="absolute inset-0 w-full h-full object-cover"
+              />
+            ) : isVideo && item.videoData ? (
+              <video
+                src={item.videoData}
+                muted
+                playsInline
+                preload="metadata"
+                className="absolute inset-0 w-full h-full object-cover"
+              />
+            ) : null}
+            {isVideo && (
+              <span className="relative z-10 w-10 h-10 sm:w-11 sm:h-11 rounded-full bg-black/55 backdrop-blur-sm border border-white/30 text-white flex items-center justify-center shadow-lg">
+                <Play className="w-4 h-4 sm:w-5 sm:h-5 fill-current ml-0.5" />
+              </span>
+            )}
+          </>
         ) : (
           <span className="flex flex-col items-center justify-center gap-1 select-none pointer-events-none">
             {fallbackIcon}
@@ -411,7 +481,9 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
               <span className="font-semibold text-sm truncate">{content.displayName}</span>
             </div>
             <span className="text-xs text-[var(--kingdom-ivory)]/80 whitespace-nowrap">
-              {publishedPhotos.length} {publishedPhotos.length === 1 ? 'photo' : 'photos'}
+              {videoCount > 0
+                ? `${photoCount} ${photoCount === 1 ? 'photo' : 'photos'} · ${videoCount} ${videoCount === 1 ? 'video' : 'videos'}`
+                : `${publishedPhotos.length} ${publishedPhotos.length === 1 ? 'photo' : 'photos'}`}
             </span>
           </div>
 
@@ -428,37 +500,62 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
                 More Kingdom Memories
               </h3>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
-                {extraPhotos.map((photo) => (
-                  <button
-                    key={photo.id}
-                    type="button"
-                    onClick={() => setLightboxPhoto(photo)}
-                    className="group relative aspect-[4/3] rounded-2xl overflow-hidden bg-[var(--kingdom-wine)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--kingdom-wine)]"
-                  >
-                    {!failedImages[photo.id] ? (
-                      <img
-                        src={photo.imageData}
-                        alt={photo.caption || photo.sectionLabel}
-                        referrerPolicy="no-referrer"
-                        onError={() =>
-                          setFailedImages((prev) => ({ ...prev, [photo.id]: true }))
-                        }
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-[var(--kingdom-ivory)]">
-                        <Crown className="w-6 h-6 opacity-80" />
-                      </div>
-                    )}
-                    {photo.caption && (
-                      <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/80 to-transparent text-left">
-                        <p className="text-xs text-white font-medium truncate">
-                          {photo.caption}
-                        </p>
-                      </div>
-                    )}
-                  </button>
-                ))}
+                {extraPhotos.map((photo) => {
+                  const isVideo = isVideoItem(photo);
+                  const hasPosterImage =
+                    Boolean(photo.imageData) &&
+                    !photo.imageData.startsWith('data:video/') &&
+                    !failedImages[photo.id];
+
+                  return (
+                    <button
+                      key={photo.id}
+                      type="button"
+                      onClick={() => setLightboxPhoto(photo)}
+                      className="group relative aspect-[4/3] rounded-2xl overflow-hidden bg-[var(--kingdom-wine)] cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--kingdom-wine)]"
+                    >
+                      {hasPosterImage ? (
+                        <img
+                          src={photo.imageData}
+                          alt={photo.caption || photo.sectionLabel}
+                          referrerPolicy="no-referrer"
+                          onError={() =>
+                            setFailedImages((prev) => ({ ...prev, [photo.id]: true }))
+                          }
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        />
+                      ) : isVideo && photo.videoData ? (
+                        <video
+                          src={photo.videoData}
+                          muted
+                          playsInline
+                          preload="metadata"
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-[var(--kingdom-ivory)]">
+                          <Crown className="w-6 h-6 opacity-80" />
+                        </div>
+                      )}
+
+                      {isVideo && (
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                          <span className="w-11 h-11 rounded-full bg-black/55 backdrop-blur-sm border border-white/30 text-white flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
+                            <Play className="w-5 h-5 fill-current ml-0.5" />
+                          </span>
+                        </div>
+                      )}
+
+                      {photo.caption && (
+                        <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/80 to-transparent text-left">
+                          <p className="text-xs text-white font-medium truncate">
+                            {photo.caption}
+                          </p>
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -557,13 +654,50 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="bg-black flex items-center justify-center max-h-[78vh]">
-              <img
-                src={lightboxPhoto.imageData}
-                alt={lightboxPhoto.caption || lightboxPhoto.sectionLabel}
-                referrerPolicy="no-referrer"
-                className="max-h-[78vh] w-auto object-contain"
-              />
+            <div className="bg-black flex items-center justify-center max-h-[78vh] min-h-[240px]">
+              {isVideoItem(lightboxPhoto) ? (
+                lightboxVideoLoading ? (
+                  <div className="flex flex-col items-center justify-center gap-2.5 py-16 text-[var(--kingdom-ivory)]/85">
+                    <Loader2 className="w-7 h-7 animate-spin" />
+                    <span className="text-xs font-medium">Loading video...</span>
+                  </div>
+                ) : lightboxVideoError ? (
+                  <div className="p-8 text-center text-xs text-red-300">
+                    {lightboxVideoError}
+                  </div>
+                ) : lightboxVideoSrc ? (
+                  (() => {
+                    const ytEmbed = getYouTubeEmbedUrl(lightboxVideoSrc);
+                    if (ytEmbed) {
+                      return (
+                        <iframe
+                          src={ytEmbed}
+                          title={lightboxPhoto.sectionLabel}
+                          allow="autoplay; encrypted-media; picture-in-picture"
+                          allowFullScreen
+                          className="w-full aspect-video max-h-[78vh]"
+                        />
+                      );
+                    }
+                    return (
+                      <video
+                        src={lightboxVideoSrc}
+                        controls
+                        autoPlay
+                        playsInline
+                        className="max-h-[78vh] w-full object-contain bg-black"
+                      />
+                    );
+                  })()
+                ) : null
+              ) : (
+                <img
+                  src={lightboxPhoto.imageData}
+                  alt={lightboxPhoto.caption || lightboxPhoto.sectionLabel}
+                  referrerPolicy="no-referrer"
+                  className="max-h-[78vh] w-auto object-contain"
+                />
+              )}
             </div>
           </div>
         </div>

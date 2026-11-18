@@ -7,10 +7,12 @@ import {
   Eye,
   EyeOff,
   FileText,
+  Film,
   Image as ImageIcon,
   LayoutDashboard,
   Link as LinkIcon,
   LogOut,
+  Play,
   Plus,
   RotateCcw,
   Save,
@@ -21,11 +23,22 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
-import { compressImageFile, formatBytes, isValidImageInput } from '../lib/imageUtils';
+import {
+  compressImageFile,
+  formatBytes,
+  generateFallbackVideoPoster,
+  getYouTubeEmbedUrl,
+  isDirectVideoUrl,
+  isValidImageInput,
+  isVideoFile,
+  isVideoItem,
+  processVideoFile,
+} from '../lib/imageUtils';
 import {
   type AdminUser,
   DEFAULT_SITE_CONTENT,
   MAX_LENGTHS,
+  type MediaType,
   type PhotoItem,
   type SiteContent,
   SLOT_DEFINITIONS,
@@ -34,6 +47,19 @@ import {
 
 type DashboardTab = 'overview' | 'photos' | 'text' | 'access';
 type PhotoFilter = 'all' | 'hero' | 'social' | 'collage' | 'extra';
+
+interface QueuedMediaItem {
+  localId: string;
+  mediaType: MediaType;
+  sectionLabel: string;
+  caption: string;
+  imageData: string;
+  videoData?: string;
+  chunkCount?: number;
+  mimeType?: string;
+  videoChunks?: string[];
+  sizeLabel: string;
+}
 
 interface AdminDashboardProps {
   user: User;
@@ -52,12 +78,35 @@ interface AdminDashboardProps {
     isExtra: boolean;
     status: 'published' | 'hidden';
     sortOrder: number;
+    mediaType?: MediaType;
+    videoData?: string;
+    chunkCount?: number;
+    mimeType?: string;
+    videoChunks?: string[];
   }) => Promise<void>;
   onAddExtraPhoto: (params: {
     sectionLabel: string;
     imageData: string;
     caption: string;
+    mediaType?: MediaType;
+    videoData?: string;
+    chunkCount?: number;
+    mimeType?: string;
+    videoChunks?: string[];
   }) => Promise<void>;
+  onAddExtraMediaBatch: (
+    items: Array<{
+      sectionLabel: string;
+      imageData: string;
+      caption: string;
+      mediaType?: MediaType;
+      videoData?: string;
+      chunkCount?: number;
+      mimeType?: string;
+      videoChunks?: string[];
+    }>,
+    onProgress?: (completed: number, total: number) => void
+  ) => Promise<void>;
   onTogglePhotoStatus: (photo: PhotoItem) => Promise<void>;
   onDeletePhoto: (photoId: string) => Promise<void>;
   onGrantAdmin: (params: { uid: string; email: string; displayName: string }) => Promise<void>;
@@ -76,6 +125,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onSaveSiteContent,
   onSavePhotoSlot,
   onAddExtraPhoto,
+  onAddExtraMediaBatch,
   onTogglePhotoStatus,
   onDeletePhoto,
   onGrantAdmin,
@@ -109,15 +159,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [captionDrafts, setCaptionDrafts] = useState<Record<string, string>>({});
 
-  // Add new photo modal/panel state
+  // Add new photo/video modal state
   const [showAddModal, setShowAddModal] = useState(false);
   const [newTargetSlot, setNewTargetSlot] = useState<string>('extra');
   const [newLabel, setNewLabel] = useState('Kingdom Memory');
   const [newCaption, setNewCaption] = useState('');
-  const [newImageData, setNewImageData] = useState('');
   const [newImageUrlInput, setNewImageUrlInput] = useState('');
-  const [newImageSizeLabel, setNewImageSizeLabel] = useState<string | null>(null);
+  const [queuedItems, setQueuedItems] = useState<QueuedMediaItem[]>([]);
+  const [processingFiles, setProcessingFiles] = useState(false);
   const [submittingNewPhoto, setSubmittingNewPhoto] = useState(false);
+  const [publishProgress, setPublishProgress] = useState<{ done: number; total: number } | null>(null);
 
   // Admin access form state
   const [adminUidInput, setAdminUidInput] = useState('');
@@ -164,7 +215,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  // Upload or replace a base slot or extra photo via file input
+  // Upload or replace a base slot or extra photo/video via file input
   const handleSlotFileUpload = async (
     file: File,
     target: {
@@ -173,29 +224,60 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       sectionLabel: string;
       isExtra: boolean;
       sortOrder: number;
+      allowVideo?: boolean;
       existingCaption?: string;
       existingStatus?: 'published' | 'hidden';
     }
   ) => {
     setBusyPhotoId(target.photoId);
     try {
-      const compressed = await compressImageFile(file);
-      await onSavePhotoSlot({
-        photoId: target.photoId,
-        slotKey: target.slotKey,
-        sectionLabel: target.sectionLabel,
-        imageData: compressed.dataUrl,
-        caption: target.existingCaption ?? '',
-        isExtra: target.isExtra,
-        status: target.existingStatus ?? 'published',
-        sortOrder: target.sortOrder,
-      });
-      notify(
-        'success',
-        `Saved ${target.sectionLabel} (${formatBytes(compressed.byteLength)})`
-      );
+      if (isVideoFile(file)) {
+        if (!target.allowVideo) {
+          throw new Error('This layout slot supports photos only. Use Collage or Extra Gallery for videos.');
+        }
+        const processed = await processVideoFile(file);
+        await onSavePhotoSlot({
+          photoId: target.photoId,
+          slotKey: target.slotKey,
+          sectionLabel: target.sectionLabel,
+          imageData: processed.posterDataUrl,
+          caption: target.existingCaption ?? '',
+          isExtra: target.isExtra,
+          status: target.existingStatus ?? 'published',
+          sortOrder: target.sortOrder,
+          mediaType: 'video',
+          videoData: processed.inlineVideoData,
+          chunkCount: processed.chunks.length,
+          mimeType: processed.mimeType,
+          videoChunks: processed.chunks,
+        });
+        notify(
+          'success',
+          `Saved video ${target.sectionLabel} (${formatBytes(processed.byteLength)})`
+        );
+      } else {
+        const compressed = await compressImageFile(file);
+        await onSavePhotoSlot({
+          photoId: target.photoId,
+          slotKey: target.slotKey,
+          sectionLabel: target.sectionLabel,
+          imageData: compressed.dataUrl,
+          caption: target.existingCaption ?? '',
+          isExtra: target.isExtra,
+          status: target.existingStatus ?? 'published',
+          sortOrder: target.sortOrder,
+          mediaType: 'image',
+          videoData: '',
+          chunkCount: 0,
+          mimeType: 'image/jpeg',
+        });
+        notify(
+          'success',
+          `Saved ${target.sectionLabel} (${formatBytes(compressed.byteLength)})`
+        );
+      }
     } catch (err) {
-      notify('error', err instanceof Error ? err.message : 'Photo upload failed.');
+      notify('error', err instanceof Error ? err.message : 'Upload failed.');
     } finally {
       setBusyPhotoId(null);
     }
@@ -214,6 +296,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         isExtra: photo.isExtra,
         status: photo.status,
         sortOrder: photo.sortOrder,
+        mediaType: photo.mediaType,
+        videoData: photo.videoData,
+        chunkCount: photo.chunkCount,
+        mimeType: photo.mimeType,
       });
       notify('success', `Updated caption for ${photo.sectionLabel}.`);
     } catch (err) {
@@ -223,63 +309,195 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  const handleNewModalFile = async (file: File) => {
-    try {
-      const compressed = await compressImageFile(file);
-      setNewImageData(compressed.dataUrl);
-      setNewImageUrlInput('');
-      setNewImageSizeLabel(
-        `${compressed.width}×${compressed.height} · ${formatBytes(compressed.byteLength)}`
-      );
-    } catch (err) {
-      notify('error', err instanceof Error ? err.message : 'Failed to process photo.');
+  const handleModalFiles = async (fileList: FileList | File[]) => {
+    const files = Array.from(fileList);
+    if (files.length === 0) return;
+
+    const selectedSlot =
+      newTargetSlot === 'extra'
+        ? null
+        : SLOT_DEFINITIONS.find((s) => s.slotKey === newTargetSlot) ?? null;
+    const allowVideo = !selectedSlot || selectedSlot.category === 'collage';
+    const filesToProcess = newTargetSlot === 'extra' ? files : [files[0]];
+
+    setProcessingFiles(true);
+    const nextQueued: QueuedMediaItem[] = [];
+    const errors: string[] = [];
+
+    for (let i = 0; i < filesToProcess.length; i++) {
+      const file = filesToProcess[i];
+      const baseTitle =
+        file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim().slice(0, MAX_LENGTHS.sectionLabel) ||
+        newLabel.trim() ||
+        'Kingdom Memory';
+
+      try {
+        if (isVideoFile(file)) {
+          if (!allowVideo) {
+            errors.push(`"${file.name}": This layout slot only supports photos.`);
+            continue;
+          }
+          const processed = await processVideoFile(file);
+          nextQueued.push({
+            localId: `${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+            mediaType: 'video',
+            sectionLabel: selectedSlot ? selectedSlot.sectionLabel : baseTitle,
+            caption: newCaption.trim(),
+            imageData: processed.posterDataUrl,
+            videoData: processed.inlineVideoData,
+            chunkCount: processed.chunks.length,
+            mimeType: processed.mimeType,
+            videoChunks: processed.chunks,
+            sizeLabel: `Video · ${formatBytes(processed.byteLength)}`,
+          });
+        } else {
+          const compressed = await compressImageFile(file);
+          nextQueued.push({
+            localId: `${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+            mediaType: 'image',
+            sectionLabel: selectedSlot ? selectedSlot.sectionLabel : baseTitle,
+            caption: newCaption.trim(),
+            imageData: compressed.dataUrl,
+            videoData: '',
+            chunkCount: 0,
+            mimeType: 'image/jpeg',
+            sizeLabel: `${compressed.width}×${compressed.height} · ${formatBytes(compressed.byteLength)}`,
+          });
+        }
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : `Failed to process "${file.name}".`);
+      }
     }
+
+    if (nextQueued.length > 0) {
+      setNewImageUrlInput('');
+      setQueuedItems((prev) =>
+        newTargetSlot === 'extra' ? [...prev, ...nextQueued] : [nextQueued[0]]
+      );
+    }
+
+    if (errors.length > 0) {
+      notify('error', errors[0]);
+    }
+
+    setProcessingFiles(false);
+  };
+
+  const resetAddModal = () => {
+    setShowAddModal(false);
+    setQueuedItems([]);
+    setNewImageUrlInput('');
+    setNewCaption('');
+    setNewTargetSlot('extra');
+    setNewLabel('Kingdom Memory');
+    setPublishProgress(null);
   };
 
   const handleCreateOrAssignPhoto = async (e: React.FormEvent) => {
     e.preventDefault();
-    const resolvedImage = (newImageData || newImageUrlInput).trim();
-    if (!isValidImageInput(resolvedImage)) {
-      notify('error', 'Please upload an image file or enter a valid HTTPS image URL.');
+
+    const trimmedUrl = newImageUrlInput.trim();
+    const hasUrl = trimmedUrl.length > 0;
+    const isUrlVideo =
+      hasUrl && (isDirectVideoUrl(trimmedUrl) || Boolean(getYouTubeEmbedUrl(trimmedUrl)));
+
+    if (queuedItems.length === 0 && !hasUrl) {
+      notify('error', 'Please choose photo/video files or paste a valid HTTPS media URL.');
+      return;
+    }
+
+    if (queuedItems.length === 0 && hasUrl && !isValidImageInput(trimmedUrl)) {
+      notify('error', 'Please enter a valid HTTPS photo or video URL.');
       return;
     }
 
     setSubmittingNewPhoto(true);
     try {
       if (newTargetSlot === 'extra') {
-        await onAddExtraPhoto({
-          sectionLabel: newLabel.trim() || 'Kingdom Memory',
-          imageData: resolvedImage,
-          caption: newCaption.trim(),
-        });
-        notify('success', 'Added new photo to the Kingdom Gallery.');
+        if (queuedItems.length > 0) {
+          setPublishProgress({ done: 0, total: queuedItems.length });
+          await onAddExtraMediaBatch(
+            queuedItems.map((item) => ({
+              sectionLabel: item.sectionLabel.trim() || newLabel.trim() || 'Kingdom Memory',
+              imageData: item.imageData,
+              caption: item.caption.trim() || newCaption.trim(),
+              mediaType: item.mediaType,
+              videoData: item.videoData,
+              chunkCount: item.chunkCount,
+              mimeType: item.mimeType,
+              videoChunks: item.videoChunks,
+            })),
+            (done, total) => setPublishProgress({ done, total })
+          );
+          const photoCount = queuedItems.filter((q) => q.mediaType === 'image').length;
+          const videoCount = queuedItems.filter((q) => q.mediaType === 'video').length;
+          notify(
+            'success',
+            `Published ${queuedItems.length} ${queuedItems.length === 1 ? 'item' : 'items'} (${photoCount} photos, ${videoCount} videos) to Kingdom Gallery.`
+          );
+        } else {
+          await onAddExtraPhoto({
+            sectionLabel: newLabel.trim() || 'Kingdom Memory',
+            imageData: isUrlVideo ? generateFallbackVideoPoster() : trimmedUrl,
+            caption: newCaption.trim(),
+            mediaType: isUrlVideo ? 'video' : 'image',
+            videoData: isUrlVideo ? trimmedUrl : '',
+            chunkCount: 0,
+            mimeType: isUrlVideo ? 'video/mp4' : 'image/jpeg',
+          });
+          notify('success', `Added new ${isUrlVideo ? 'video' : 'photo'} to the Kingdom Gallery.`);
+        }
       } else {
         const slotDef = SLOT_DEFINITIONS.find((s) => s.slotKey === newTargetSlot);
         if (!slotDef) throw new Error('Invalid slot selected.');
-        await onSavePhotoSlot({
-          photoId: slotDef.slotKey,
-          slotKey: slotDef.slotKey,
-          sectionLabel: slotDef.sectionLabel,
-          imageData: resolvedImage,
-          caption: newCaption.trim(),
-          isExtra: false,
-          status: 'published',
-          sortOrder: slotDef.sortOrder,
-        });
-        notify('success', `Published photo to ${slotDef.sectionLabel}.`);
+        const single = queuedItems[0];
+        if (single) {
+          if (single.mediaType === 'video' && slotDef.category !== 'collage') {
+            throw new Error('Videos can only be assigned to Collage slots or Extra Gallery.');
+          }
+          await onSavePhotoSlot({
+            photoId: slotDef.slotKey,
+            slotKey: slotDef.slotKey,
+            sectionLabel: slotDef.sectionLabel,
+            imageData: single.imageData,
+            caption: newCaption.trim() || single.caption,
+            isExtra: false,
+            status: 'published',
+            sortOrder: slotDef.sortOrder,
+            mediaType: single.mediaType,
+            videoData: single.videoData,
+            chunkCount: single.chunkCount,
+            mimeType: single.mimeType,
+            videoChunks: single.videoChunks,
+          });
+        } else {
+          if (isUrlVideo && slotDef.category !== 'collage') {
+            throw new Error('Videos can only be assigned to Collage slots or Extra Gallery.');
+          }
+          await onSavePhotoSlot({
+            photoId: slotDef.slotKey,
+            slotKey: slotDef.slotKey,
+            sectionLabel: slotDef.sectionLabel,
+            imageData: isUrlVideo ? generateFallbackVideoPoster() : trimmedUrl,
+            caption: newCaption.trim(),
+            isExtra: false,
+            status: 'published',
+            sortOrder: slotDef.sortOrder,
+            mediaType: isUrlVideo ? 'video' : 'image',
+            videoData: isUrlVideo ? trimmedUrl : '',
+            chunkCount: 0,
+            mimeType: isUrlVideo ? 'video/mp4' : 'image/jpeg',
+          });
+        }
+        notify('success', `Published media to ${slotDef.sectionLabel}.`);
       }
 
-      setShowAddModal(false);
-      setNewImageData('');
-      setNewImageUrlInput('');
-      setNewCaption('');
-      setNewImageSizeLabel(null);
-      setNewTargetSlot('extra');
-      setNewLabel('Kingdom Memory');
+      resetAddModal();
     } catch (err) {
-      notify('error', err instanceof Error ? err.message : 'Failed to save photo.');
+      notify('error', err instanceof Error ? err.message : 'Failed to save media.');
     } finally {
       setSubmittingNewPhoto(false);
+      setPublishProgress(null);
     }
   };
 
@@ -335,7 +553,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const tabLabel: Record<DashboardTab, string> = {
     overview: 'Overview',
-    photos: 'Photo Manager',
+    photos: 'Photo & Video Manager',
     text: 'Text & Copy Editor',
     access: 'Admin Access',
   };
@@ -398,7 +616,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           {(
             [
               { id: 'overview', label: 'Overview', icon: LayoutDashboard },
-              { id: 'photos', label: 'Photo Manager', icon: ImageIcon },
+              { id: 'photos', label: 'Photos & Videos', icon: ImageIcon },
               { id: 'text', label: 'Text & Copy', icon: FileText },
               { id: 'access', label: 'Admin Access', icon: Shield },
             ] as const
@@ -585,7 +803,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     className="min-h-[40px] inline-flex items-center gap-2 rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] px-4 py-2 text-xs font-semibold transition-colors cursor-pointer"
                   >
                     <Plus className="w-4 h-4" />
-                    <span>Add Photo</span>
+                    <span>Add Photos / Videos</span>
                   </button>
                   <button
                     type="button"
@@ -720,7 +938,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     className="min-h-[38px] inline-flex items-center gap-2 rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] px-4 py-2 text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
                   >
                     <Plus className="w-4 h-4" />
-                    <span>Add Photo</span>
+                    <span>Add Photos / Videos</span>
                   </button>
                 </div>
               </div>
@@ -743,22 +961,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           key={slot.slotKey}
                           className="rounded-xl border border-slate-800 bg-slate-900 overflow-hidden flex flex-col"
                         >
-                          {/* Image Preview */}
+                          {/* Media Preview */}
                           <div className="relative h-44 bg-slate-950 flex items-center justify-center overflow-hidden">
                             {item ? (
-                              <img
-                                src={item.imageData}
-                                alt={item.caption || slot.sectionLabel}
-                                referrerPolicy="no-referrer"
-                                className={`w-full h-full object-cover ${
-                                  item.status === 'hidden' ? 'opacity-45 grayscale' : ''
-                                }`}
-                              />
+                              <>
+                                <img
+                                  src={item.imageData}
+                                  alt={item.caption || slot.sectionLabel}
+                                  referrerPolicy="no-referrer"
+                                  className={`w-full h-full object-cover ${
+                                    item.status === 'hidden' ? 'opacity-45 grayscale' : ''
+                                  }`}
+                                />
+                                {isVideoItem(item) && (
+                                  <span className="absolute top-2.5 left-2.5 inline-flex items-center gap-1 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-semibold text-white">
+                                    <Film className="w-3 h-3" />
+                                    <span>VIDEO</span>
+                                  </span>
+                                )}
+                              </>
                             ) : (
                               <div className="text-center space-y-1.5 px-4">
                                 <Crown className="w-6 h-6 mx-auto text-slate-600" />
                                 <p className="text-xs text-slate-500">
-                                  No photo uploaded yet
+                                  No media uploaded yet
                                 </p>
                               </div>
                             )}
@@ -768,7 +994,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                 fileInputRefs.current[slot.slotKey] = el;
                               }}
                               type="file"
-                              accept="image/*"
+                              accept={slot.category === 'collage' ? 'image/*,video/*' : 'image/*'}
                               className="hidden"
                               onChange={(e) => {
                                 const file = e.target.files?.[0];
@@ -779,6 +1005,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                     sectionLabel: slot.sectionLabel,
                                     isExtra: false,
                                     sortOrder: slot.sortOrder,
+                                    allowVideo: slot.category === 'collage',
                                     existingCaption: item?.caption,
                                     existingStatus: item?.status,
                                   });
@@ -793,7 +1020,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <div className="space-y-1">
                               <div className="flex items-center justify-between gap-2 text-xs text-slate-400">
                                 <span className="font-mono-tabular">{slot.slotKey}</span>
-                                <span>{slot.aspectHint}</span>
+                                <span>
+                                  {slot.category === 'collage'
+                                    ? `${slot.aspectHint} · Photo/Video`
+                                    : slot.aspectHint}
+                                </span>
                               </div>
                               <h3 className="text-sm font-semibold text-white">
                                 {slot.sectionLabel}
@@ -845,7 +1076,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                     ? 'Saving...'
                                     : item
                                       ? 'Replace'
-                                      : 'Upload Photo'}
+                                      : slot.category === 'collage'
+                                        ? 'Upload Media'
+                                        : 'Upload Photo'}
                                 </span>
                               </button>
 
@@ -884,7 +1117,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                     <button
                                       type="button"
                                       onClick={() => setConfirmDeleteId(item.id)}
-                                      title="Remove photo"
+                                      title="Remove media"
                                       className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg border border-slate-700 hover:bg-red-950/60 hover:border-red-800 text-slate-400 hover:text-red-300 cursor-pointer"
                                     >
                                       <Trash2 className="w-3.5 h-3.5" />
@@ -901,24 +1134,38 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               )}
 
-              {/* Extra Gallery Photos */}
+              {/* Extra Gallery Photos & Videos */}
               {(photoFilter === 'all' || photoFilter === 'extra') && (
                 <div className="space-y-3 pt-2">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <h2 className="text-sm font-semibold text-slate-200">
                       Extra Gallery Memories ({filteredExtraPhotos.length})
                     </h2>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewTargetSlot('extra');
+                        setShowAddModal(true);
+                      }}
+                      className="min-h-[34px] inline-flex items-center gap-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 text-slate-200 px-3 py-1.5 text-xs font-medium cursor-pointer"
+                    >
+                      <Upload className="w-3.5 h-3.5 text-[#c19ee0]" />
+                      <span>Upload Photos &amp; Videos</span>
+                    </button>
                   </div>
 
                   {filteredExtraPhotos.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-slate-800 bg-slate-900/40 p-8 text-center space-y-3">
-                      <ImageIcon className="w-7 h-7 mx-auto text-slate-600" />
+                      <div className="flex items-center justify-center gap-2 text-slate-600">
+                        <ImageIcon className="w-6 h-6" />
+                        <Film className="w-6 h-6" />
+                      </div>
                       <div className="space-y-1">
                         <p className="text-sm font-medium text-slate-300">
-                          No extra gallery photos yet
+                          No extra gallery photos or videos yet
                         </p>
                         <p className="text-xs text-slate-500">
-                          Add extra photos beyond the 14 layout slots to expand the More Kingdom Memories section.
+                          Upload multiple photos and videos together to expand the More Kingdom Memories gallery.
                         </p>
                       </div>
                       <button
@@ -930,13 +1177,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         className="min-h-[38px] inline-flex items-center gap-2 rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] px-4 py-2 text-xs font-semibold cursor-pointer"
                       >
                         <Plus className="w-4 h-4" />
-                        <span>Add Gallery Photo</span>
+                        <span>Upload Photos &amp; Videos</span>
                       </button>
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                       {filteredExtraPhotos.map((photo) => {
                         const isBusy = busyPhotoId === photo.id;
+                        const isVideo = isVideoItem(photo);
                         const captionValue =
                           captionDrafts[photo.id] ?? photo.caption;
 
@@ -956,12 +1204,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                     : ''
                                 }`}
                               />
+                              {isVideo && (
+                                <>
+                                  <span className="absolute top-2.5 left-2.5 inline-flex items-center gap-1 rounded-full bg-black/70 px-2.5 py-1 text-[10px] font-semibold text-white">
+                                    <Film className="w-3 h-3" />
+                                    <span>VIDEO</span>
+                                  </span>
+                                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                    <span className="w-10 h-10 rounded-full bg-black/55 border border-white/30 text-white flex items-center justify-center">
+                                      <Play className="w-4 h-4 fill-current ml-0.5" />
+                                    </span>
+                                  </div>
+                                </>
+                              )}
                               <input
                                 ref={(el) => {
                                   fileInputRefs.current[photo.id] = el;
                                 }}
                                 type="file"
-                                accept="image/*"
+                                accept="image/*,video/*"
                                 className="hidden"
                                 onChange={(e) => {
                                   const file = e.target.files?.[0];
@@ -972,6 +1233,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                       sectionLabel: photo.sectionLabel,
                                       isExtra: true,
                                       sortOrder: photo.sortOrder,
+                                      allowVideo: true,
                                       existingCaption: photo.caption,
                                       existingStatus: photo.status,
                                     });
@@ -984,7 +1246,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <div className="p-4 flex-1 flex flex-col justify-between gap-3">
                               <div className="space-y-1">
                                 <div className="flex items-center justify-between text-xs text-slate-400">
-                                  <span>Extra Memory</span>
+                                  <span>{isVideo ? 'Extra Video' : 'Extra Photo'}</span>
                                   <span>
                                     {photo.status === 'published'
                                       ? 'Published'
@@ -1374,27 +1636,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </main>
       </div>
 
-      {/* Add / Upload Photo Modal */}
+      {/* Add / Upload Photos & Videos Modal */}
       {showAddModal && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Add or Assign Photo"
+          aria-label="Add Photos or Videos"
           className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={() => setShowAddModal(false)}
+          onClick={resetAddModal}
         >
           <form
             onSubmit={handleCreateOrAssignPhoto}
             onClick={(e) => e.stopPropagation()}
-            className="max-w-lg w-full rounded-2xl border border-slate-800 bg-slate-900 p-6 space-y-5 shadow-2xl"
+            className="max-w-xl w-full max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-800 bg-slate-900 p-6 space-y-5 shadow-2xl"
           >
             <div className="flex items-center justify-between">
               <h2 className="text-base font-semibold text-white">
-                Add or Update Website Photo
+                Add Photos &amp; Videos
               </h2>
               <button
                 type="button"
-                onClick={() => setShowAddModal(false)}
+                onClick={resetAddModal}
                 className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg hover:bg-slate-800 text-slate-400 cursor-pointer"
               >
                 <X className="w-4 h-4" />
@@ -1408,26 +1670,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </span>
                 <select
                   value={newTargetSlot}
-                  onChange={(e) => setNewTargetSlot(e.target.value)}
+                  onChange={(e) => {
+                    const nextSlot = e.target.value;
+                    setNewTargetSlot(nextSlot);
+                    if (nextSlot !== 'extra' && queuedItems.length > 1) {
+                      setQueuedItems((prev) => prev.slice(0, 1));
+                    }
+                  }}
                   className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-[#c19ee0]"
                 >
-                  <option value="extra">Add to Extra Gallery Memories</option>
+                  <option value="extra">Add to Extra Gallery Memories (Photos &amp; Videos)</option>
                   {SLOT_DEFINITIONS.map((s) => (
                     <option key={s.slotKey} value={s.slotKey}>
-                      {s.slotKey.toUpperCase()} — {s.sectionLabel} ({s.aspectHint})
+                      {s.slotKey.toUpperCase()} — {s.sectionLabel} ({s.aspectHint}
+                      {s.category === 'collage' ? ' · Photo/Video' : ''})
                     </option>
                   ))}
                 </select>
               </label>
 
-              {newTargetSlot === 'extra' && (
+              {newTargetSlot === 'extra' && queuedItems.length === 0 && (
                 <label className="block space-y-1.5">
                   <span className="text-xs font-medium text-slate-300">
-                    Memory Title
+                    Default Memory Title
                   </span>
                   <input
                     type="text"
-                    required
                     maxLength={MAX_LENGTHS.sectionLabel}
                     value={newLabel}
                     onChange={(e) => setNewLabel(e.target.value)}
@@ -1438,95 +1706,197 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               )}
 
               <div className="space-y-2">
-                <span className="block text-xs font-medium text-slate-300">
-                  Upload Image File (Auto-compressed)
-                </span>
-                <label className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-950/60 p-5 text-center cursor-pointer hover:border-[#c19ee0] transition-colors">
-                  {newImageData ? (
-                    <div className="space-y-2 w-full">
-                      <img
-                        src={newImageData}
-                        alt="Upload preview"
-                        className="h-36 mx-auto rounded-lg object-cover"
-                      />
-                      {newImageSizeLabel && (
-                        <p className="text-[11px] font-mono-tabular text-emerald-400">
-                          Ready · {newImageSizeLabel}
-                        </p>
-                      )}
-                    </div>
-                  ) : (
-                    <>
-                      <Upload className="w-6 h-6 text-slate-400 mb-2" />
-                      <span className="text-xs font-medium text-slate-200">
-                        Click to choose photo from device
-                      </span>
-                      <span className="text-[11px] text-slate-500 mt-0.5">
-                        JPEG, PNG, or WebP
-                      </span>
-                    </>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-slate-300">
+                    {newTargetSlot === 'extra'
+                      ? 'Select Photos & Videos Together (Multi-upload)'
+                      : 'Upload Media File'}
+                  </span>
+                  {queuedItems.length > 0 && (
+                    <span className="text-emerald-400 font-mono-tabular">
+                      {queuedItems.length} ready
+                    </span>
                   )}
+                </div>
+
+                <label
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (e.dataTransfer.files?.length) {
+                      void handleModalFiles(e.dataTransfer.files);
+                    }
+                  }}
+                  className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-950/60 p-5 text-center cursor-pointer hover:border-[#c19ee0] transition-colors"
+                >
+                  <Upload className="w-6 h-6 text-slate-400 mb-2" />
+                  <span className="text-xs font-medium text-slate-200">
+                    {processingFiles
+                      ? 'Processing selected files...'
+                      : newTargetSlot === 'extra'
+                        ? 'Click or drop photos & videos together'
+                        : 'Click to choose file from device'}
+                  </span>
+                  <span className="text-[11px] text-slate-500 mt-0.5">
+                    {newTargetSlot === 'extra' ||
+                    SLOT_DEFINITIONS.find((s) => s.slotKey === newTargetSlot)?.category === 'collage'
+                      ? 'Photos (JPEG, PNG, WebP) & Videos (MP4, WebM, MOV up to 9 MB)'
+                      : 'Photos (JPEG, PNG, WebP)'}
+                  </span>
                   <input
                     type="file"
-                    accept="image/*"
+                    accept={
+                      newTargetSlot === 'extra' ||
+                      SLOT_DEFINITIONS.find((s) => s.slotKey === newTargetSlot)?.category === 'collage'
+                        ? 'image/*,video/*'
+                        : 'image/*'
+                    }
+                    multiple={newTargetSlot === 'extra'}
                     className="hidden"
                     onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) void handleNewModalFile(file);
+                      if (e.target.files?.length) {
+                        void handleModalFiles(e.target.files);
+                      }
+                      e.target.value = '';
                     }}
                   />
                 </label>
+
+                {/* Batch Queue Preview List */}
+                {queuedItems.length > 0 && (
+                  <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                    {queuedItems.map((item) => (
+                      <div
+                        key={item.localId}
+                        className="rounded-xl border border-slate-800 bg-slate-950 p-2.5 flex items-start gap-3"
+                      >
+                        <div className="relative w-16 h-16 rounded-lg overflow-hidden bg-slate-900 shrink-0">
+                          <img
+                            src={item.imageData}
+                            alt={item.sectionLabel}
+                            className="w-full h-full object-cover"
+                          />
+                          {item.mediaType === 'video' && (
+                            <span className="absolute inset-0 bg-black/35 flex items-center justify-center">
+                              <Play className="w-4 h-4 text-white fill-current" />
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0 space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-mono-tabular text-emerald-400">
+                              {item.sizeLabel}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setQueuedItems((prev) =>
+                                  prev.filter((q) => q.localId !== item.localId)
+                                )
+                              }
+                              aria-label="Remove item from batch"
+                              className="text-slate-500 hover:text-red-300 cursor-pointer"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
+                          {newTargetSlot === 'extra' && (
+                            <input
+                              type="text"
+                              maxLength={MAX_LENGTHS.sectionLabel}
+                              value={item.sectionLabel}
+                              onChange={(e) =>
+                                setQueuedItems((prev) =>
+                                  prev.map((q) =>
+                                    q.localId === item.localId
+                                      ? { ...q, sectionLabel: e.target.value }
+                                      : q
+                                  )
+                                )
+                              }
+                              placeholder="Title..."
+                              className="w-full rounded-md bg-slate-900 border border-slate-800 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                            />
+                          )}
+
+                          <input
+                            type="text"
+                            maxLength={MAX_LENGTHS.caption}
+                            value={item.caption}
+                            onChange={(e) =>
+                              setQueuedItems((prev) =>
+                                prev.map((q) =>
+                                  q.localId === item.localId
+                                    ? { ...q, caption: e.target.value }
+                                    : q
+                                )
+                              )
+                            }
+                            placeholder="Optional caption..."
+                            className="w-full rounded-md bg-slate-900 border border-slate-800 px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
-                  <LinkIcon className="w-3.5 h-3.5" />
-                  <span>Or Paste Direct Image URL (Optional)</span>
-                </span>
-                <input
-                  type="url"
-                  value={newImageUrlInput}
-                  onChange={(e) => {
-                    setNewImageUrlInput(e.target.value);
-                    if (e.target.value) {
-                      setNewImageData('');
-                      setNewImageSizeLabel(null);
-                    }
-                  }}
-                  placeholder="https://..."
-                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-[#c19ee0]"
-                />
-              </label>
+              {queuedItems.length === 0 && (
+                <>
+                  <label className="block space-y-1.5">
+                    <span className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                      <LinkIcon className="w-3.5 h-3.5" />
+                      <span>Or Paste Direct Photo / Video / YouTube URL (Optional)</span>
+                    </span>
+                    <input
+                      type="url"
+                      value={newImageUrlInput}
+                      onChange={(e) => setNewImageUrlInput(e.target.value)}
+                      placeholder="https://... (.jpg, .png, .mp4, or YouTube link)"
+                      className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                    />
+                  </label>
 
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-slate-300">
-                  Caption (Optional)
-                </span>
-                <input
-                  type="text"
-                  maxLength={MAX_LENGTHS.caption}
-                  value={newCaption}
-                  onChange={(e) => setNewCaption(e.target.value)}
-                  placeholder="A short note shown in lightbox..."
-                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-[#c19ee0]"
-                />
-              </label>
+                  <label className="block space-y-1.5">
+                    <span className="text-xs font-medium text-slate-300">
+                      Caption (Optional)
+                    </span>
+                    <input
+                      type="text"
+                      maxLength={MAX_LENGTHS.caption}
+                      value={newCaption}
+                      onChange={(e) => setNewCaption(e.target.value)}
+                      placeholder="A short note shown in lightbox..."
+                      className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-[#c19ee0]"
+                    />
+                  </label>
+                </>
+              )}
             </div>
 
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 type="button"
-                onClick={() => setShowAddModal(false)}
+                onClick={resetAddModal}
                 className="min-h-[40px] px-4 py-2 rounded-lg border border-slate-700 text-xs font-medium text-slate-300 hover:bg-slate-800 cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                disabled={submittingNewPhoto}
+                disabled={submittingNewPhoto || processingFiles}
                 className="min-h-[40px] px-5 py-2 rounded-lg bg-[#7251b5] hover:bg-[#815ac0] text-[#f6f1fc] text-xs font-semibold disabled:opacity-60 cursor-pointer"
               >
-                {submittingNewPhoto ? 'Publishing...' : 'Publish Photo'}
+                {submittingNewPhoto
+                  ? publishProgress
+                    ? `Publishing ${publishProgress.done}/${publishProgress.total}...`
+                    : 'Publishing...'
+                  : queuedItems.length > 1
+                    ? `Publish All (${queuedItems.length})`
+                    : 'Publish'}
               </button>
             </div>
           </form>

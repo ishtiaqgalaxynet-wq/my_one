@@ -28,6 +28,7 @@ import {
   type AdminUser,
   DEFAULT_SITE_CONTENT,
   MAX_LENGTHS,
+  type MediaType,
   type PhotoItem,
   type PhotoStatus,
   sanitizeSiteContent,
@@ -35,6 +36,8 @@ import {
   SLOT_DEFINITIONS,
   SUPER_ADMIN_EMAIL,
 } from '../types/kingdom';
+
+const videoSourceCache = new Map<string, string>();
 
 export function useKingdomData() {
   const [user, setUser] = useState<User | null>(null);
@@ -244,7 +247,7 @@ export function useKingdomData() {
     [user, isAdmin]
   );
 
-  // Photo slot CRUD (s0..s13 or updating an existing extra photo)
+  // Photo & video slot CRUD (s0..s13 or updating an existing extra item)
   const savePhotoSlot = useCallback(
     async (params: {
       photoId: string;
@@ -255,16 +258,26 @@ export function useKingdomData() {
       isExtra: boolean;
       status: PhotoStatus;
       sortOrder: number;
+      mediaType?: MediaType;
+      videoData?: string;
+      chunkCount?: number;
+      mimeType?: string;
+      videoChunks?: string[];
     }) => {
       if (!user || !isAdmin) {
-        throw new Error('Admin authorization required to save photos.');
+        throw new Error('Admin authorization required to save media.');
       }
 
       const path = `photos/${params.photoId}`;
       const existingPhoto = photos.find((p) => p.id === params.photoId);
-      const sectionLabel = params.sectionLabel.trim().slice(0, MAX_LENGTHS.sectionLabel) || 'Photo';
+      const sectionLabel = params.sectionLabel.trim().slice(0, MAX_LENGTHS.sectionLabel) || 'Memory';
       const caption = params.caption.trim().slice(0, MAX_LENGTHS.caption);
       const imageData = params.imageData.trim().slice(0, MAX_LENGTHS.imageData);
+      const mediaType: MediaType = params.mediaType ?? 'image';
+      const videoData = (params.videoData ?? '').trim().slice(0, MAX_LENGTHS.videoData);
+      const videoChunks = params.videoChunks ?? [];
+      const chunkCount = Math.max(0, Math.min(MAX_LENGTHS.maxVideoChunks, params.chunkCount ?? videoChunks.length));
+      const mimeType = (params.mimeType ?? '').trim().slice(0, MAX_LENGTHS.mimeType);
 
       try {
         if (existingPhoto) {
@@ -274,6 +287,10 @@ export function useKingdomData() {
             caption,
             status: params.status,
             sortOrder: Math.max(0, Math.min(10000, Math.round(params.sortOrder))),
+            mediaType,
+            videoData,
+            chunkCount,
+            mimeType,
             updatedAt: serverTimestamp(),
             updatedByUid: user.uid,
           });
@@ -286,10 +303,41 @@ export function useKingdomData() {
             isExtra: params.isExtra,
             status: params.status,
             sortOrder: Math.max(0, Math.min(10000, Math.round(params.sortOrder))),
+            mediaType,
+            videoData,
+            chunkCount,
+            mimeType,
             updatedAt: serverTimestamp(),
             updatedByUid: user.uid,
           });
         }
+
+        // Write video chunks after parent document exists
+        if (videoChunks.length > 0) {
+          await Promise.all(
+            videoChunks.map((chunkStr, idx) =>
+              setDoc(doc(db, 'photos', params.photoId, 'chunks', String(idx)), {
+                index: idx,
+                data: chunkStr,
+                updatedAt: serverTimestamp(),
+                updatedByUid: user.uid,
+              })
+            )
+          );
+        }
+
+        // Clean up leftover chunks if replaced by smaller video or image
+        const prevChunkCount = existingPhoto?.chunkCount ?? 0;
+        if (prevChunkCount > chunkCount) {
+          await Promise.all(
+            Array.from({ length: prevChunkCount - chunkCount }, (_, offset) =>
+              deleteDoc(doc(db, 'photos', params.photoId, 'chunks', String(chunkCount + offset))).catch(() => undefined)
+            )
+          );
+        }
+
+        videoSourceCache.delete(`${params.photoId}:${prevChunkCount}`);
+        videoSourceCache.delete(`${params.photoId}:${chunkCount}`);
       } catch (error) {
         handleFirestoreError(error, OperationType.WRITE, path);
       }
@@ -298,9 +346,18 @@ export function useKingdomData() {
   );
 
   const addExtraPhoto = useCallback(
-    async (params: { sectionLabel: string; imageData: string; caption: string }) => {
+    async (params: {
+      sectionLabel: string;
+      imageData: string;
+      caption: string;
+      mediaType?: MediaType;
+      videoData?: string;
+      chunkCount?: number;
+      mimeType?: string;
+      videoChunks?: string[];
+    }) => {
       if (!user || !isAdmin) {
-        throw new Error('Admin authorization required to add gallery photos.');
+        throw new Error('Admin authorization required to add gallery media.');
       }
 
       const id = `extra_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -315,10 +372,91 @@ export function useKingdomData() {
         isExtra: true,
         status: 'published',
         sortOrder: maxOrder + 1,
+        mediaType: params.mediaType,
+        videoData: params.videoData,
+        chunkCount: params.chunkCount,
+        mimeType: params.mimeType,
+        videoChunks: params.videoChunks,
       });
     },
     [user, isAdmin, photos, savePhotoSlot]
   );
+
+  const addExtraMediaBatch = useCallback(
+    async (
+      items: Array<{
+        sectionLabel: string;
+        imageData: string;
+        caption: string;
+        mediaType?: MediaType;
+        videoData?: string;
+        chunkCount?: number;
+        mimeType?: string;
+        videoChunks?: string[];
+      }>,
+      onProgress?: (completed: number, total: number) => void
+    ) => {
+      if (!user || !isAdmin) {
+        throw new Error('Admin authorization required to add gallery media.');
+      }
+
+      const baseOrder = photos.reduce((max, item) => Math.max(max, item.sortOrder ?? 0), 13);
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const id = `extra_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`;
+        await savePhotoSlot({
+          photoId: id,
+          slotKey: id,
+          sectionLabel: item.sectionLabel || 'Kingdom Memory',
+          imageData: item.imageData,
+          caption: item.caption,
+          isExtra: true,
+          status: 'published',
+          sortOrder: baseOrder + 1 + i,
+          mediaType: item.mediaType,
+          videoData: item.videoData,
+          chunkCount: item.chunkCount,
+          mimeType: item.mimeType,
+          videoChunks: item.videoChunks,
+        });
+        onProgress?.(i + 1, items.length);
+      }
+    },
+    [user, isAdmin, photos, savePhotoSlot]
+  );
+
+  const loadVideoSource = useCallback(async (photo: PhotoItem): Promise<string> => {
+    if (photo.videoData && photo.videoData.trim().length > 0) {
+      return photo.videoData;
+    }
+
+    const totalChunks = photo.chunkCount ?? 0;
+    if (totalChunks <= 0) {
+      return photo.imageData;
+    }
+
+    const cacheKey = `${photo.id}:${totalChunks}`;
+    const cached = videoSourceCache.get(cacheKey);
+    if (cached) return cached;
+
+    try {
+      const snaps = await Promise.all(
+        Array.from({ length: totalChunks }, (_, idx) =>
+          getDoc(doc(db, 'photos', photo.id, 'chunks', String(idx)))
+        )
+      );
+      const combined = snaps
+        .map((snap) => (snap.exists() ? String((snap.data() as { data?: string }).data ?? '') : ''))
+        .join('');
+      if (!combined) {
+        throw new Error('Video chunks are missing or unavailable.');
+      }
+      videoSourceCache.set(cacheKey, combined);
+      return combined;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, `photos/${photo.id}/chunks`);
+    }
+  }, []);
 
   const togglePhotoStatus = useCallback(
     async (photo: PhotoItem) => {
@@ -342,13 +480,23 @@ export function useKingdomData() {
     async (photoId: string) => {
       if (!user || !isAdmin) return;
       const path = `photos/${photoId}`;
+      const existingPhoto = photos.find((p) => p.id === photoId);
+      const totalChunks = existingPhoto?.chunkCount ?? 0;
       try {
+        if (totalChunks > 0) {
+          await Promise.all(
+            Array.from({ length: totalChunks }, (_, idx) =>
+              deleteDoc(doc(db, 'photos', photoId, 'chunks', String(idx))).catch(() => undefined)
+            )
+          );
+        }
         await deleteDoc(doc(db, 'photos', photoId));
+        videoSourceCache.delete(`${photoId}:${totalChunks}`);
       } catch (error) {
         handleFirestoreError(error, OperationType.DELETE, path);
       }
     },
-    [user, isAdmin]
+    [user, isAdmin, photos]
   );
 
   const grantAdminAccess = useCallback(
@@ -409,6 +557,8 @@ export function useKingdomData() {
     saveSiteContent,
     savePhotoSlot,
     addExtraPhoto,
+    addExtraMediaBatch,
+    loadVideoSource,
     togglePhotoStatus,
     deletePhoto,
     grantAdminAccess,

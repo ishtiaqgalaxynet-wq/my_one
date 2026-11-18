@@ -31,6 +31,10 @@ export const MAX_LENGTHS = {
   slotKey: 64,
   sectionLabel: 80,
   imageData: 800000,
+  videoData: 750000,
+  chunkData: 700000,
+  maxVideoChunks: 20,
+  mimeType: 80,
   caption: 200,
   email: 160,
   adminDisplayName: 80,
@@ -38,6 +42,7 @@ export const MAX_LENGTHS = {
 
 export type ThemeMode = 'dark' | 'light';
 export type PhotoStatus = 'published' | 'hidden';
+export type MediaType = 'image' | 'video';
 
 export interface SiteContent {
   displayName: string;
@@ -81,6 +86,10 @@ export interface PhotoItem {
   isExtra: boolean;
   status: PhotoStatus;
   sortOrder: number;
+  mediaType?: MediaType;
+  videoData?: string;
+  chunkCount?: number;
+  mimeType?: string;
   updatedAt?: unknown;
   updatedByUid?: string;
 }
