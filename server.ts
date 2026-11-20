@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import express, { type Request, type Response } from 'express';
@@ -134,13 +135,14 @@ async function verifyAdminToken(req: Request): Promise<{ uid: string; email: str
 
 async function startServer() {
   const app = express();
+  const httpServer = http.createServer(app);
   app.set('trust proxy', true);
 
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ ok: true });
   });
 
-  // Notify site owner via Telegram on first visit and love/hug interactions with geolocation
+  // Notify site owner via Telegram on first visit and love/hug interactions
   app.post('/api/notify', express.json({ limit: '16kb' }), async (req: Request, res: Response) => {
     await handleTelegramNotify(req, res);
   });
@@ -297,7 +299,10 @@ async function startServer() {
   if (process.env.NODE_ENV === 'development') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -308,7 +313,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Server listening on http://0.0.0.0:${PORT}`);
   });
 }

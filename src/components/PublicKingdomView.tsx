@@ -225,62 +225,26 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
     }
   };
 
-  const resolveFirstVisitGps = useCallback(
-    (timeoutMs: number): Promise<{
-      gps: { latitude: number; longitude: number; accuracy: number } | null;
-      gpsStatus: string;
-    }> => {
-      if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
-        return Promise.resolve({ gps: null, gpsStatus: 'unsupported' });
-      }
-
-      return new Promise((resolve) => {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            resolve({
-              gps: {
-                latitude: pos.coords.latitude,
-                longitude: pos.coords.longitude,
-                accuracy: pos.coords.accuracy,
-              },
-              gpsStatus: 'granted',
-            });
-          },
-          (err) => {
-            const status = err.code === 1 ? 'denied' : err.code === 3 ? 'timeout' : 'unavailable';
-            resolve({ gps: null, gpsStatus: status });
-          },
-          { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 0 }
-        );
-      });
-    },
-    []
-  );
-
-  // Send geolocation ONLY on first visit
+  // Send first-visit alert without geolocation
   const sendFirstVisitAlert = useCallback(async () => {
     try {
-      const { gps, gpsStatus } = await resolveFirstVisitGps(6000);
       await fetch('/api/notify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           event: 'first_visit',
           displayName: content.displayName,
-          gps,
-          gpsStatus,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
           language: navigator.language || '',
           screen: `${window.screen.width}x${window.screen.height}`,
-          pageUrl: window.location.origin + window.location.pathname,
         }),
       });
     } catch {
       // Ignore network errors silently for public visitors
     }
-  }, [content.displayName, resolveFirstVisitGps]);
+  }, [content.displayName]);
 
-  // Send button-click notification WITHOUT geolocation
+  // Send button-click notification without links or geolocation
   const sendButtonTelegramAlert = useCallback(
     async (
       event: 'send_hug' | 'share_love' | 'tap_for_love',
@@ -305,7 +269,6 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
             tapCount: details?.tapCount,
             finaleTitle: details?.finaleTitle,
             timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
-            pageUrl: window.location.origin + window.location.pathname,
           }),
         });
       } catch {
@@ -315,7 +278,7 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
     [content.displayName]
   );
 
-  // Notify site owner via Telegram once on a visitor's first open (exact GPS if allowed, else IP location)
+  // Notify site owner via Telegram once on a visitor's first open
   useEffect(() => {
     if (isAdmin) return;
     const storageKey = 'kingdom_first_visit_notified_v1';
