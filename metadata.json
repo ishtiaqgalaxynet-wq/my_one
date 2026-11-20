@@ -1,7 +1,7 @@
 {
   "name": "The Princess Kingdom",
   "description": "A customizable personal kingdom showcase with secure admin login, photo management, and live text editing.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["geolocation"],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

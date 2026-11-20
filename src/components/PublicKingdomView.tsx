@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Crown,
+  Eye,
   Heart,
   Loader2,
   Moon,
@@ -12,15 +13,22 @@ import {
   X,
 } from 'lucide-react';
 import {
+  type BurstEffectVariant,
   FloatingHeartsOverlay,
   type FloatingBurstParticle,
 } from './FloatingHeartsOverlay';
+import { extractDriveFileId } from '../lib/googleDrive';
 import { getYouTubeEmbedUrl, isVideoItem } from '../lib/imageUtils';
 import { type PhotoItem, type SiteContent, type ThemeMode } from '../types/kingdom';
 
 interface PublicKingdomViewProps {
   content: SiteContent;
   photos: PhotoItem[];
+  hugCount: number;
+  visitorCount: number;
+  statsLoaded: boolean;
+  onIncrementHug: () => Promise<number>;
+  onRecordVisitor: () => Promise<number>;
   theme: ThemeMode;
   onToggleTheme: () => void;
   isAdmin: boolean;
@@ -29,9 +37,17 @@ interface PublicKingdomViewProps {
   onLoadBackgroundMusic: (content: SiteContent) => Promise<string | null>;
 }
 
+let visitNotifyStarted = false;
+let sessionVisitCounted = false;
+
 export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
   content,
   photos,
+  hugCount,
+  visitorCount,
+  statsLoaded,
+  onIncrementHug,
+  onRecordVisitor,
   theme,
   onToggleTheme,
   isAdmin,
@@ -49,12 +65,16 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
     }
   });
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [hugCount, setHugCount] = useState<number>(0);
+  const [optimisticHugCount, setOptimisticHugCount] = useState<number>(0);
+  const optimisticHugTargetRef = useRef<number>(0);
+  const tapLoveCountRef = useRef<number>(0);
+  const displayedHugCount = Math.max(hugCount, optimisticHugCount);
   const [lightboxPhoto, setLightboxPhoto] = useState<PhotoItem | null>(null);
   const [lightboxVideoSrc, setLightboxVideoSrc] = useState<string | null>(null);
   const [lightboxVideoLoading, setLightboxVideoLoading] = useState(false);
   const [lightboxVideoError, setLightboxVideoError] = useState<string | null>(null);
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+  const [driveFallbackImages, setDriveFallbackImages] = useState<Record<string, boolean>>({});
 
   // Background music player state (plays uploaded MP3 automatically on page load)
   const bgAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -205,6 +225,135 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
     }
   };
 
+  const resolveFirstVisitGps = useCallback(
+    (timeoutMs: number): Promise<{
+      gps: { latitude: number; longitude: number; accuracy: number } | null;
+      gpsStatus: string;
+    }> => {
+      if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
+        return Promise.resolve({ gps: null, gpsStatus: 'unsupported' });
+      }
+
+      return new Promise((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            resolve({
+              gps: {
+                latitude: pos.coords.latitude,
+                longitude: pos.coords.longitude,
+                accuracy: pos.coords.accuracy,
+              },
+              gpsStatus: 'granted',
+            });
+          },
+          (err) => {
+            const status = err.code === 1 ? 'denied' : err.code === 3 ? 'timeout' : 'unavailable';
+            resolve({ gps: null, gpsStatus: status });
+          },
+          { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 0 }
+        );
+      });
+    },
+    []
+  );
+
+  // Send geolocation ONLY on first visit
+  const sendFirstVisitAlert = useCallback(async () => {
+    try {
+      const { gps, gpsStatus } = await resolveFirstVisitGps(6000);
+      await fetch('/api/notify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event: 'first_visit',
+          displayName: content.displayName,
+          gps,
+          gpsStatus,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+          language: navigator.language || '',
+          screen: `${window.screen.width}x${window.screen.height}`,
+          pageUrl: window.location.origin + window.location.pathname,
+        }),
+      });
+    } catch {
+      // Ignore network errors silently for public visitors
+    }
+  }, [content.displayName, resolveFirstVisitGps]);
+
+  // Send button-click notification WITHOUT geolocation
+  const sendButtonTelegramAlert = useCallback(
+    async (
+      event: 'send_hug' | 'share_love' | 'tap_for_love',
+      buttonLabel: string,
+      details?: {
+        hugCount?: number;
+        shareCopied?: boolean;
+        tapCount?: number;
+        finaleTitle?: string;
+      }
+    ) => {
+      try {
+        await fetch('/api/notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event,
+            displayName: content.displayName,
+            buttonLabel,
+            hugCount: details?.hugCount,
+            shareCopied: details?.shareCopied,
+            tapCount: details?.tapCount,
+            finaleTitle: details?.finaleTitle,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+            pageUrl: window.location.origin + window.location.pathname,
+          }),
+        });
+      } catch {
+        // Ignore network errors silently for public visitors
+      }
+    },
+    [content.displayName]
+  );
+
+  // Notify site owner via Telegram once on a visitor's first open (exact GPS if allowed, else IP location)
+  useEffect(() => {
+    if (isAdmin) return;
+    const storageKey = 'kingdom_first_visit_notified_v1';
+    try {
+      if (window.localStorage.getItem(storageKey)) return;
+    } catch {
+      return;
+    }
+
+    if (visitNotifyStarted) return;
+    visitNotifyStarted = true;
+
+    try {
+      window.localStorage.setItem(storageKey, String(Date.now()));
+    } catch {
+      // Ignore storage restrictions
+    }
+    void sendFirstVisitAlert();
+  }, [isAdmin, sendFirstVisitAlert]);
+
+  // Increment persistent visitor counter once per browser session
+  useEffect(() => {
+    if (sessionVisitCounted) return;
+    const sessionKey = 'kingdom_session_visit_v1';
+    try {
+      if (window.sessionStorage.getItem(sessionKey)) {
+        sessionVisitCounted = true;
+        return;
+      }
+      window.sessionStorage.setItem(sessionKey, String(Date.now()));
+    } catch {
+      // Proceed once in-memory even if sessionStorage is unavailable
+    }
+
+    sessionVisitCounted = true;
+    void onRecordVisitor().catch(() => undefined);
+  }, [onRecordVisitor]);
+
   useEffect(() => {
     let cancelled = false;
     if (!lightboxPhoto || !isVideoItem(lightboxPhoto)) {
@@ -320,35 +469,107 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
     });
   };
 
-  const triggerHeartBurst = (emojis: string[] = ['💖', '💕', '👑', '✨', '💗', '🌹']) => {
-    const batch: FloatingBurstParticle[] = Array.from({ length: 18 }, (_, i) => ({
-      id: Date.now() + i + Math.random(),
-      emoji: emojis[Math.floor(Math.random() * emojis.length)],
-      left: `${4 + Math.random() * 90}vw`,
-      size: 18 + Math.floor(Math.random() * 20),
-    }));
+  const triggerCustomBurst = (
+    variant: BurstEffectVariant,
+    emojis: string[],
+    count = 20
+  ) => {
+    const batch: FloatingBurstParticle[] = Array.from({ length: count }, (_, i) => {
+      const driftSign = i % 2 === 0 ? 1 : -1;
+      const driftAmount =
+        variant === 'share'
+          ? driftSign * (24 + Math.floor(Math.random() * 44))
+          : variant === 'royal'
+            ? driftSign * (18 + Math.floor(Math.random() * 34))
+            : driftSign * (14 + Math.floor(Math.random() * 26));
+      return {
+        id: Date.now() + i + Math.random(),
+        emoji: emojis[Math.floor(Math.random() * emojis.length)],
+        left: `${4 + Math.random() * 90}vw`,
+        size:
+          variant === 'royal'
+            ? 20 + Math.floor(Math.random() * 22)
+            : 18 + Math.floor(Math.random() * 18),
+        variant,
+        drift: `${driftAmount}px`,
+        delayMs: Math.floor(Math.random() * 260),
+      };
+    });
 
     setParticles((prev) => [...prev, ...batch]);
     window.setTimeout(() => {
       const ids = new Set(batch.map((b) => b.id));
       setParticles((prev) => prev.filter((p) => !ids.has(p.id)));
-    }, 3900);
+    }, 4600);
   };
 
-  const handleSendHug = () => {
-    setHugCount((c) => c + 1);
-    triggerHeartBurst(['🤗', '💖', '💕', '👑']);
-    showToast(`Sent a warm royal hug to ${content.displayName}`);
+  const handleSendHug = async () => {
+    const optimisticNext = Math.max(hugCount, optimisticHugTargetRef.current) + 1;
+    optimisticHugTargetRef.current = optimisticNext;
+    setOptimisticHugCount(optimisticNext);
+
+    triggerCustomBurst('hug', ['🤗', '🫂', '💖', '💕', '🌷'], 20);
+    showToast(
+      `Sending a giant warm royal hug to ${content.displayName}! (#${optimisticNext.toLocaleString()})`
+    );
+
+    try {
+      const persistedCount = await onIncrementHug();
+      optimisticHugTargetRef.current = Math.max(optimisticHugTargetRef.current, persistedCount);
+      setOptimisticHugCount((curr) => Math.max(curr, persistedCount));
+      void sendButtonTelegramAlert('send_hug', content.hugButtonText, {
+        hugCount: persistedCount,
+      });
+    } catch {
+      void sendButtonTelegramAlert('send_hug', content.hugButtonText, {
+        hugCount: optimisticNext,
+      });
+    }
   };
 
   const handleShareLove = async () => {
-    triggerHeartBurst(['💗', '✨', '🌹']);
+    triggerCustomBurst('share', ['💌', '✨', '🌸', '💗', '🕊️', '🌹'], 22);
+    let copied = false;
     try {
       await navigator.clipboard.writeText(window.location.href);
-      showToast('Kingdom link copied to share');
+      copied = true;
+      showToast(`Love link copied — share ${content.displayName}'s Kingdom!`);
     } catch {
-      showToast('Sharing love across the kingdom');
+      showToast(`Spreading sparkles & love across ${content.displayName}'s Kingdom!`);
     }
+    void sendButtonTelegramAlert('share_love', content.shareButtonText, {
+      shareCopied: copied,
+    });
+  };
+
+  const handleTapForLove = () => {
+    const nextTap = tapLoveCountRef.current + 1;
+    tapLoveCountRef.current = nextTap;
+    triggerCustomBurst('royal', ['👑', '💜', '🪻', '✨', '💎', '💕'], 26);
+    showToast(`Royal love shower unlocked for ${content.displayName}!`);
+    void sendButtonTelegramAlert('tap_for_love', content.finaleButtonText, {
+      tapCount: nextTap,
+      finaleTitle: content.finaleTitle,
+    });
+  };
+
+  const resolveImageSrc = (item: PhotoItem): string => {
+    if (driveFallbackImages[item.id]) {
+      const driveId = extractDriveFileId(item.imageData);
+      if (driveId) {
+        return `https://drive.google.com/thumbnail?id=${encodeURIComponent(driveId)}&sz=w1600`;
+      }
+    }
+    return item.imageData;
+  };
+
+  const handleImageError = (item: PhotoItem) => {
+    const driveId = extractDriveFileId(item.imageData);
+    if (driveId && !driveFallbackImages[item.id]) {
+      setDriveFallbackImages((prev) => ({ ...prev, [item.id]: true }));
+      return;
+    }
+    setFailedImages((prev) => ({ ...prev, [item.id]: true }));
   };
 
   const normalizedIg = content.instagramHandle.startsWith('@')
@@ -384,7 +605,7 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
             {autoLoopVideoSrc ? (
               <video
                 src={autoLoopVideoSrc}
-                poster={hasPosterImage ? item.imageData : undefined}
+                poster={hasPosterImage ? resolveImageSrc(item) : undefined}
                 autoPlay
                 loop
                 muted
@@ -393,10 +614,10 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
               />
             ) : hasPosterImage ? (
               <img
-                src={item.imageData}
+                src={resolveImageSrc(item)}
                 alt={item.caption || item.sectionLabel}
                 referrerPolicy="no-referrer"
-                onError={() => setFailedImages((prev) => ({ ...prev, [item.id]: true }))}
+                onError={() => handleImageError(item)}
                 className="absolute inset-0 w-full h-full object-cover"
               />
             ) : null}
@@ -659,13 +880,15 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
             <div className="grid grid-cols-2 gap-3">
               <button
                 type="button"
-                onClick={handleSendHug}
+                onClick={() => void handleSendHug()}
                 className="min-h-[44px] inline-flex items-center justify-center gap-2 rounded-xl bg-[#dec9e9] hover:bg-[#dac3e8] text-[#352063] px-4 py-2.5 text-xs sm:text-sm font-semibold active:scale-[0.98] transition-all cursor-pointer"
               >
                 <Heart className="w-4 h-4 shrink-0" />
                 <span>
                   {content.hugButtonText}
-                  {hugCount > 0 ? ` (${hugCount})` : ''}
+                </span>
+                <span className="tabular-nums opacity-85">
+                  ({displayedHugCount.toLocaleString()})
                 </span>
               </button>
 
@@ -764,7 +987,7 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
                       {autoLoopVideoSrc ? (
                         <video
                           src={autoLoopVideoSrc}
-                          poster={hasPosterImage ? photo.imageData : undefined}
+                          poster={hasPosterImage ? resolveImageSrc(photo) : undefined}
                           autoPlay
                           loop
                           muted
@@ -773,12 +996,10 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
                         />
                       ) : hasPosterImage ? (
                         <img
-                          src={photo.imageData}
+                          src={resolveImageSrc(photo)}
                           alt={photo.caption || photo.sectionLabel}
                           referrerPolicy="no-referrer"
-                          onError={() =>
-                            setFailedImages((prev) => ({ ...prev, [photo.id]: true }))
-                          }
+                          onError={() => handleImageError(photo)}
                           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                         />
                       ) : (
@@ -834,8 +1055,8 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
           <div className="flex flex-col items-center gap-4">
             <button
               type="button"
-              onClick={() => triggerHeartBurst(['💜', '✨', '👑', '🪻', '💕', '🌸'])}
-              className="min-h-[48px] rounded-full bg-[var(--kingdom-wine)] text-[var(--kingdom-ivory)] border-2 border-[var(--kingdom-ivory)]/80 px-8 py-3 text-sm sm:text-base font-bold hover:bg-[var(--kingdom-deep)] active:scale-[0.98] transition-all cursor-pointer shadow-lg"
+              onClick={handleTapForLove}
+              className="tap-love-heartbeat min-h-[48px] rounded-full bg-[var(--kingdom-wine)] text-[var(--kingdom-ivory)] border-2 border-[var(--kingdom-ivory)]/80 px-8 py-3 text-sm sm:text-base font-bold hover:bg-[var(--kingdom-deep)] hover:border-[var(--kingdom-ivory)] cursor-pointer shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--kingdom-ivory)]"
             >
               {content.finaleButtonText}
             </button>
@@ -845,7 +1066,21 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
 
       {/* Quiet Footer */}
       <footer className="border-t border-[var(--kingdom-ink)]/15 py-6 px-4 text-center text-xs text-[var(--kingdom-ink)]/75">
-        <div className="max-w-5xl mx-auto flex items-center justify-center">
+        <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-center gap-x-3.5 gap-y-2">
+          <span
+            className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs text-[var(--kingdom-ink)]/70 tabular-nums"
+            aria-label={`Total visitors: ${visitorCount.toLocaleString()}`}
+          >
+            <Eye className="w-3.5 h-3.5 opacity-80" />
+            <span>
+              {statsLoaded
+                ? `${visitorCount.toLocaleString()} ${visitorCount === 1 ? 'visitor' : 'visitors'}`
+                : '— visitors'}
+            </span>
+          </span>
+          <span aria-hidden="true" className="opacity-35">
+            ·
+          </span>
           <button
             type="button"
             onClick={onOpenAdmin}

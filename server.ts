@@ -1,9 +1,10 @@
+import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { Readable } from 'node:stream';
-import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import express, { type Request, type Response } from 'express';
+import { handleDriveFileProxy } from './api/_lib/driveProxy.ts';
+import { handleTelegramNotify } from './api/_lib/telegramNotify.ts';
 
 interface FirebaseAppletConfig {
   projectId: string;
@@ -133,9 +134,15 @@ async function verifyAdminToken(req: Request): Promise<{ uid: string; email: str
 
 async function startServer() {
   const app = express();
+  app.set('trust proxy', true);
 
   app.get('/api/health', (_req: Request, res: Response) => {
     res.json({ ok: true });
+  });
+
+  // Notify site owner via Telegram on first visit and love/hug interactions with geolocation
+  app.post('/api/notify', express.json({ limit: '16kb' }), async (req: Request, res: Response) => {
+    await handleTelegramNotify(req, res);
   });
 
   // Upload photo, video, or MP3 audio file to local server storage (never Firebase/Firestore)
@@ -284,81 +291,7 @@ async function startServer() {
 
   // Stream publicly shared Google Drive photos, videos, and audio with HTTP Range support
   app.get('/api/drive/file/:fileId', async (req: Request, res: Response) => {
-    const fileId = String(req.params.fileId || '');
-    if (!/^[a-zA-Z0-9_-]{10,120}$/.test(fileId)) {
-      res.status(400).end('Invalid Google Drive file ID');
-      return;
-    }
-
-    const forwardHeaders: Record<string, string> = {
-      'User-Agent': 'Mozilla/5.0',
-    };
-    if (typeof req.headers.range === 'string' && req.headers.range.trim()) {
-      forwardHeaders.Range = req.headers.range;
-    }
-
-    const candidates = [
-      `https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`,
-      `https://drive.google.com/uc?export=download&confirm=t&id=${encodeURIComponent(fileId)}`,
-    ];
-
-    const controller = new AbortController();
-    req.on('close', () => {
-      if (!res.writableEnded) {
-        controller.abort();
-      }
-    });
-
-    try {
-      let upstream: globalThis.Response | null = null;
-
-      for (const candidateUrl of candidates) {
-        const attempt = await fetch(candidateUrl, {
-          headers: forwardHeaders,
-          redirect: 'follow',
-          signal: controller.signal,
-        });
-
-        const ct = (attempt.headers.get('content-type') || '').toLowerCase();
-        if ((attempt.ok || attempt.status === 206) && !ct.includes('text/html')) {
-          upstream = attempt;
-          break;
-        }
-        await attempt.body?.cancel().catch(() => undefined);
-      }
-
-      if (!upstream || !upstream.body) {
-        res.status(404).end('Google Drive file is unavailable or not shared.');
-        return;
-      }
-
-      res.status(upstream.status);
-      const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
-      const contentLength = upstream.headers.get('content-length');
-      const contentRange = upstream.headers.get('content-range');
-      const acceptRanges = upstream.headers.get('accept-ranges') || 'bytes';
-
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Accept-Ranges', acceptRanges);
-      res.setHeader('Cache-Control', 'public, max-age=3600');
-      if (contentLength) res.setHeader('Content-Length', contentLength);
-      if (contentRange) res.setHeader('Content-Range', contentRange);
-
-      const nodeStream = Readable.fromWeb(upstream.body as unknown as WebReadableStream);
-      nodeStream.on('error', () => {
-        if (!res.headersSent) {
-          res.status(502).end('Stream error');
-        } else {
-          res.end();
-        }
-      });
-      nodeStream.pipe(res);
-    } catch (err) {
-      if ((err as { name?: string })?.name === 'AbortError') return;
-      if (!res.headersSent) {
-        res.status(502).end('Failed to stream Google Drive media');
-      }
-    }
+    await handleDriveFileProxy(String(req.params.fileId || ''), req, res);
   });
 
   if (process.env.NODE_ENV === 'development') {

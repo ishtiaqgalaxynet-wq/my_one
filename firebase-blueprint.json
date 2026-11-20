@@ -424,6 +424,31 @@
         "createdAt",
         "createdByUid"
       ]
+    },
+    "SiteStats": {
+      "title": "SiteStats",
+      "description": "Shared public engagement counters (persisted hug count and visitor count).",
+      "type": "object",
+      "properties": {
+        "hugCount": {
+          "type": "integer",
+          "description": "Cumulative number of hugs sent across all visitors."
+        },
+        "visitorCount": {
+          "type": "integer",
+          "description": "Cumulative number of visitor sessions on the site."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when a counter was last incremented."
+        }
+      },
+      "required": [
+        "hugCount",
+        "visitorCount",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -456,6 +481,12 @@
         "$ref": "#/entities/AdminUser"
       },
       "description": "Allowlist of authorized admin UIDs managed by the primary owner."
+    },
+    "/site_stats/{docId}": {
+      "schema": {
+        "$ref": "#/entities/SiteStats"
+      },
+      "description": "Stores shared public counters (hugCount and visitorCount) at /site_stats/counters."
     }
   }
 }

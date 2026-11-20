@@ -173,6 +173,18 @@ service cloud.firestore {
       data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128;
     }
 
+    function isValidSiteStats(data) {
+      return data.keys().hasAll([
+        'hugCount', 'visitorCount', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'hugCount', 'visitorCount', 'updatedAt'
+      ]) &&
+      data.hugCount is int && data.hugCount >= 0 && data.hugCount <= 100000000 &&
+      data.visitorCount is int && data.visitorCount >= 0 && data.visitorCount <= 100000000 &&
+      data.updatedAt == request.time;
+    }
+
     // ---- Collection Rules ----
 
     // Connection check document
@@ -273,6 +285,36 @@ service cloud.firestore {
         incoming().createdByUid == existing().createdByUid &&
         incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'role']);
       allow delete: if isValidId(adminUid) && isBootstrapAdmin();
+    }
+
+    // Public monotonic engagement counters (hugCount & visitorCount)
+    match /site_stats/{docId} {
+      allow get: if isValidId(docId) && docId == 'counters';
+      allow list: if isBootstrapAdmin();
+      allow create: if isValidId(docId) && docId == 'counters' && isValidSiteStats(incoming()) && (
+        (
+          incoming().hugCount >= 0 && incoming().hugCount <= 1 &&
+          incoming().visitorCount >= 0 && incoming().visitorCount <= 1 &&
+          (incoming().hugCount + incoming().visitorCount) == 1
+        ) || isAdmin()
+      );
+      allow update: if isValidId(docId) && docId == 'counters' && isValidSiteStats(incoming()) && (
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['hugCount', 'updatedAt']) &&
+          incoming().hugCount == existing().hugCount + 1 &&
+          incoming().visitorCount == existing().visitorCount
+        ) ||
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['visitorCount', 'updatedAt']) &&
+          incoming().visitorCount == existing().visitorCount + 1 &&
+          incoming().hugCount == existing().hugCount
+        ) ||
+        (
+          isAdmin() &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['hugCount', 'visitorCount', 'updatedAt'])
+        )
+      );
+      allow delete: if isValidId(docId) && docId == 'counters' && isBootstrapAdmin();
     }
   }
 }

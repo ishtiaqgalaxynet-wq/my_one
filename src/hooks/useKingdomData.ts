@@ -13,6 +13,7 @@ import {
   getDoc,
   onSnapshot,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -39,6 +40,7 @@ import {
   type PhotoStatus,
   sanitizeSiteContent,
   type SiteContent,
+  type SiteStats,
   SLOT_DEFINITIONS,
   SUPER_ADMIN_EMAIL,
 } from '../types/kingdom';
@@ -66,6 +68,9 @@ export function useKingdomData() {
 
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [photosLoaded, setPhotosLoaded] = useState(false);
+
+  const [siteStats, setSiteStats] = useState<SiteStats>({ hugCount: 0, visitorCount: 0 });
+  const [statsLoaded, setStatsLoaded] = useState(false);
 
   const [admins, setAdmins] = useState<AdminUser[]>([]);
 
@@ -223,6 +228,39 @@ export function useKingdomData() {
       }
     };
   }, [isSuperAdmin]);
+
+  // 5. Public engagement counters listener (site_stats/counters)
+  useEffect(() => {
+    if (!authReady) return;
+
+    const path = 'site_stats/counters';
+    const unsubscribe = onSnapshot(
+      doc(db, 'site_stats', 'counters'),
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as Partial<SiteStats>;
+          const hugCount =
+            typeof data.hugCount === 'number' && Number.isFinite(data.hugCount)
+              ? Math.max(0, Math.floor(data.hugCount))
+              : 0;
+          const visitorCount =
+            typeof data.visitorCount === 'number' && Number.isFinite(data.visitorCount)
+              ? Math.max(0, Math.floor(data.visitorCount))
+              : 0;
+          setSiteStats({ hugCount, visitorCount });
+        } else {
+          setSiteStats({ hugCount: 0, visitorCount: 0 });
+        }
+        setStatsLoaded(true);
+      },
+      (error) => {
+        setStatsLoaded(true);
+        handleFirestoreError(error, OperationType.GET, path);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [authReady]);
 
   // Auth actions
   const signInWithGoogle = useCallback(async () => {
@@ -706,6 +744,68 @@ export function useKingdomData() {
     [user, isSuperAdmin]
   );
 
+  const incrementHugCount = useCallback(async (): Promise<number> => {
+    const path = 'site_stats/counters';
+    const statsRef = doc(db, 'site_stats', 'counters');
+    try {
+      return await runTransaction(db, async (tx) => {
+        const snap = await tx.get(statsRef);
+        if (!snap.exists()) {
+          tx.set(statsRef, {
+            hugCount: 1,
+            visitorCount: 0,
+            updatedAt: serverTimestamp(),
+          });
+          return 1;
+        }
+        const data = snap.data() as Partial<SiteStats>;
+        const current =
+          typeof data.hugCount === 'number' && Number.isFinite(data.hugCount)
+            ? Math.max(0, Math.floor(data.hugCount))
+            : 0;
+        const nextHugCount = current + 1;
+        tx.update(statsRef, {
+          hugCount: nextHugCount,
+          updatedAt: serverTimestamp(),
+        });
+        return nextHugCount;
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
+  }, []);
+
+  const recordVisitor = useCallback(async (): Promise<number> => {
+    const path = 'site_stats/counters';
+    const statsRef = doc(db, 'site_stats', 'counters');
+    try {
+      return await runTransaction(db, async (tx) => {
+        const snap = await tx.get(statsRef);
+        if (!snap.exists()) {
+          tx.set(statsRef, {
+            hugCount: 0,
+            visitorCount: 1,
+            updatedAt: serverTimestamp(),
+          });
+          return 1;
+        }
+        const data = snap.data() as Partial<SiteStats>;
+        const current =
+          typeof data.visitorCount === 'number' && Number.isFinite(data.visitorCount)
+            ? Math.max(0, Math.floor(data.visitorCount))
+            : 0;
+        const nextVisitorCount = current + 1;
+        tx.update(statsRef, {
+          visitorCount: nextVisitorCount,
+          updatedAt: serverTimestamp(),
+        });
+        return nextVisitorCount;
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
+  }, []);
+
   return {
     user,
     authReady,
@@ -721,6 +821,8 @@ export function useKingdomData() {
     hasRemoteContent,
     photos,
     photosLoaded,
+    siteStats,
+    statsLoaded,
     admins,
     saveSiteContent,
     saveBackgroundMusic,
@@ -731,6 +833,8 @@ export function useKingdomData() {
     loadVideoSource,
     togglePhotoStatus,
     deletePhoto,
+    incrementHugCount,
+    recordVisitor,
     grantAdminAccess,
     revokeAdminAccess,
     getAuthToken,

@@ -30,6 +30,8 @@ function KingdomApp() {
     hasRemoteContent,
     photos,
     photosLoaded,
+    siteStats,
+    statsLoaded,
     admins,
     saveSiteContent,
     saveBackgroundMusic,
@@ -40,6 +42,8 @@ function KingdomApp() {
     loadVideoSource,
     togglePhotoStatus,
     deletePhoto,
+    incrementHugCount,
+    recordVisitor,
     grantAdminAccess,
     revokeAdminAccess,
     getAuthToken,
@@ -199,6 +203,11 @@ function KingdomApp() {
       <PublicKingdomView
         content={siteContent}
         photos={photos}
+        hugCount={siteStats.hugCount}
+        visitorCount={siteStats.visitorCount}
+        statsLoaded={statsLoaded}
+        onIncrementHug={incrementHugCount}
+        onRecordVisitor={recordVisitor}
         theme={activeTheme}
         onToggleTheme={() =>
           setThemeOverride(activeTheme === 'dark' ? 'light' : 'dark')

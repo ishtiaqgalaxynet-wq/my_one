@@ -117,6 +117,12 @@ export interface AdminUser {
   createdByUid?: string;
 }
 
+export interface SiteStats {
+  hugCount: number;
+  visitorCount: number;
+  updatedAt?: unknown;
+}
+
 export type SlotCategory = 'hero' | 'social' | 'collage';
 
 export interface SlotDefinition {

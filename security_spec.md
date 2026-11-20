@@ -8,6 +8,7 @@
 5. **PII Isolation**: `/admins/{adminUid}` contains email addresses and is readable only by the matching user (`request.auth.uid == adminUid`) or an active admin; `allow list` on `/admins` is restricted solely to the bootstrap owner (`isBootstrapAdmin()`).
 6. **Path ID Hardening**: All single-document operations enforce `isValidId()` (`^[a-zA-Z0-9_-]+$`, max 128 chars).
 7. **Media & Music Chunk Master Gate**: `/photos/{photoId}/chunks/{chunkId}` and `/site_content/{docId}/music_chunks/{chunkId}` require parent document existence for writes, enforce `<= 700,000` chars per chunk, disable collection-wide `list`, and gate `get` on parent publication (`status == 'published'` or `bgMusicEnabled == true`) or `isAdmin()`.
+8. **Monotonic Public Counters**: `/site_stats/counters` is publicly readable via `get` and restricts public updates to strict `+1` increments on either `hugCount` or `visitorCount` individually with `updatedAt == request.time`. Public users cannot decrement, inflate by `> 1`, inject extra fields, or list the collection.
 
 ## 2. The "Dirty Dozen" Adversarial Payloads
 1. **Unauthenticated `site_content` write**: `setDoc('/site_content/main', {...})` with `auth = null` -> `PERMISSION_DENIED`.
@@ -22,3 +23,4 @@
 10. **Secondary admin escalating or deleting other admins**: Non-bootstrap admin tries to write or delete `/admins/{otherUid}` -> `PERMISSION_DENIED`.
 11. **PII scraping via `list` on `/admins`**: Non-bootstrap user runs `getDocs(collection(db, 'admins'))` -> `PERMISSION_DENIED`.
 12. **Reading hidden draft photos or their video chunks as public visitor**: Unauthenticated user runs `getDocs(collection(db, 'photos'))` without `where('status', '==', 'published')` or `getDoc('/photos/hiddenId/chunks/0')` -> `PERMISSION_DENIED`.
+13. **Counter tampering on `/site_stats/counters`**: Public visitor tries to set `hugCount: 9999` or decrement `visitorCount` -> `PERMISSION_DENIED`.
