@@ -211,43 +211,21 @@ body {
 
 @keyframes floatAmbientHeart {
   0% {
-    transform: translate3d(0, 108vh, 0) rotate(0deg) scale(0.8);
+    transform: translate3d(0, 108vh, 0) rotate(0deg) scale(0.85);
     opacity: 0;
   }
-  10% {
-    opacity: var(--heart-opacity, 0.72);
+  12% {
+    opacity: var(--heart-opacity, 0.5);
   }
-  35% {
-    transform: translate3d(var(--heart-drift, 18px), 68vh, 0) rotate(var(--heart-tilt, 10deg)) scale(1.06);
+  50% {
+    transform: translate3d(var(--heart-drift, 16px), 48vh, 0) rotate(var(--heart-tilt, 10deg)) scale(1);
+    opacity: var(--heart-opacity, 0.5);
   }
-  68% {
-    transform: translate3d(calc(var(--heart-drift, 18px) * -0.7), 28vh, 0) rotate(calc(var(--heart-tilt, 10deg) * -0.7)) scale(0.96);
-    opacity: var(--heart-opacity, 0.72);
-  }
-  90% {
-    opacity: var(--heart-opacity, 0.72);
+  88% {
+    opacity: var(--heart-opacity, 0.5);
   }
   100% {
-    transform: translate3d(calc(var(--heart-drift, 18px) * 0.35), -12vh, 0) rotate(var(--heart-tilt, 10deg)) scale(1.08);
-    opacity: 0;
-  }
-}
-
-@keyframes floatDynamicHeart {
-  0% {
-    transform: translate3d(0, 0, 0) rotate(-8deg) scale(0.65);
-    opacity: 0;
-  }
-  14% {
-    opacity: var(--heart-opacity, 0.8);
-    transform: translate3d(calc(var(--heart-drift, 18px) * 0.25), -14vh, 0) rotate(6deg) scale(1.06);
-  }
-  55% {
-    transform: translate3d(var(--heart-drift, 18px), -58vh, 0) rotate(-10deg) scale(1.12);
-    opacity: var(--heart-opacity, 0.8);
-  }
-  100% {
-    transform: translate3d(calc(var(--heart-drift, 18px) * -0.45), -108vh, 0) rotate(12deg) scale(0.9);
+    transform: translate3d(calc(var(--heart-drift, 16px) * -0.5), -12vh, 0) rotate(calc(var(--heart-tilt, 10deg) * -1)) scale(0.92);
     opacity: 0;
   }
 }
@@ -255,21 +233,9 @@ body {
 .ambient-floating-heart {
   position: absolute;
   top: 0;
-  line-height: 1;
-  user-select: none;
   will-change: transform, opacity;
   animation: floatAmbientHeart 13s linear infinite;
-  filter: drop-shadow(0 3px 8px rgba(168, 85, 247, 0.35));
-}
-
-.dynamic-floating-heart {
-  position: absolute;
-  bottom: -28px;
-  line-height: 1;
-  user-select: none;
-  will-change: transform, opacity;
-  animation: floatDynamicHeart 7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-  filter: drop-shadow(0 3px 10px rgba(244, 114, 182, 0.4));
+  filter: drop-shadow(0 2px 6px rgba(98, 71, 170, 0.28));
 }
 
 @keyframes heartbeatPulse {
@@ -337,8 +303,7 @@ body {
   .floating-effect-royal {
     animation-duration: 0.8s;
   }
-  .ambient-floating-heart,
-  .dynamic-floating-heart {
+  .ambient-floating-heart {
     animation: none;
     display: none;
   }
