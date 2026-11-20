@@ -19,6 +19,11 @@ import {
 } from './FloatingHeartsOverlay';
 import { extractDriveFileId } from '../lib/googleDrive';
 import { getYouTubeEmbedUrl, isVideoItem } from '../lib/imageUtils';
+import {
+  notifyButtonInteraction,
+  notifyFirstVisit,
+  type TelegramInteractionEvent,
+} from '../lib/telegramClient';
 import { type PhotoItem, type SiteContent, type ThemeMode } from '../types/kingdom';
 
 interface PublicKingdomViewProps {
@@ -226,35 +231,14 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
   };
 
   // Send first-visit alert without geolocation
-  const sendFirstVisitAlert = useCallback(async (): Promise<boolean> => {
-    try {
-      const res = await fetch('/api/notify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        keepalive: true,
-        body: JSON.stringify({
-          event: 'first_visit',
-          displayName: content.displayName,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
-          language: navigator.language || '',
-          screen: `${window.screen.width}x${window.screen.height}`,
-        }),
-      });
-      if (!res.ok) return false;
-      const data = (await res.json().catch(() => null)) as
-        | { notified?: boolean; deduplicated?: boolean }
-        | null;
-      return Boolean(data?.notified || data?.deduplicated);
-    } catch {
-      // Ignore network errors silently for public visitors
-      return false;
-    }
+  const sendFirstVisitAlert = useCallback((): Promise<boolean> => {
+    return notifyFirstVisit(content.displayName);
   }, [content.displayName]);
 
   // Send button-click notification without links or geolocation
   const sendButtonTelegramAlert = useCallback(
-    async (
-      event: 'send_hug' | 'share_love' | 'tap_for_love',
+    (
+      event: TelegramInteractionEvent,
       buttonLabel: string,
       details?: {
         hugCount?: number;
@@ -263,25 +247,14 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
         finaleTitle?: string;
       }
     ) => {
-      try {
-        await fetch('/api/notify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          keepalive: true,
-          body: JSON.stringify({
-            event,
-            displayName: content.displayName,
-            buttonLabel,
-            hugCount: details?.hugCount,
-            shareCopied: details?.shareCopied,
-            tapCount: details?.tapCount,
-            finaleTitle: details?.finaleTitle,
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
-          }),
-        });
-      } catch {
-        // Ignore network errors silently for public visitors
-      }
+      void notifyButtonInteraction(event, {
+        displayName: content.displayName,
+        buttonLabel,
+        hugCount: details?.hugCount,
+        shareCopied: details?.shareCopied,
+        tapCount: details?.tapCount,
+        finaleTitle: details?.finaleTitle,
+      });
     },
     [content.displayName]
   );

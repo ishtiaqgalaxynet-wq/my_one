@@ -5,7 +5,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import express, { type Request, type Response } from 'express';
 import { handleDriveFileProxy } from './api/_lib/driveProxy.ts';
-import { getTelegramEnv, handleTelegramNotify } from './api/_lib/telegramNotify.ts';
+import {
+  getTelegramConfig,
+  handleTelegramNotify,
+  handleTelegramTest,
+} from './api/_lib/telegramNotify.ts';
 
 interface FirebaseAppletConfig {
   projectId: string;
@@ -139,14 +143,43 @@ async function startServer() {
   app.set('trust proxy', true);
 
   app.get('/api/health', (_req: Request, res: Response) => {
-    const { botToken, chatId } = getTelegramEnv();
-    res.json({ ok: true, telegramConfigured: Boolean(botToken && chatId) });
+    const config = getTelegramConfig();
+    res.json({
+      ok: true,
+      telegramConfigured: config.configured,
+      targetChats: config.chatIds.length,
+    });
   });
 
   // Notify site owner via Telegram on first visit and love/hug interactions
-  app.post('/api/notify', express.json({ limit: '16kb' }), async (req: Request, res: Response) => {
-    await handleTelegramNotify(req, res);
-  });
+  app.post(
+    '/api/notify',
+    express.json({ limit: '16kb', type: ['application/json', 'text/plain'] }),
+    async (req: Request, res: Response) => {
+      try {
+        await handleTelegramNotify(req, res);
+      } catch (err) {
+        console.warn('[Telegram] Unexpected notify handler error:', err);
+        if (!res.headersSent) {
+          res.status(200).json({ ok: true, notified: false, reason: 'internal_error' });
+        }
+      }
+    }
+  );
+
+  // Admin-only endpoint to verify live Telegram bot delivery on Render/production
+  app.post(
+    '/api/notify/test',
+    express.json({ limit: '4kb' }),
+    async (req: Request, res: Response) => {
+      const admin = await verifyAdminToken(req);
+      if (!admin) {
+        res.status(401).json({ ok: false, error: 'Verified admin authentication required.' });
+        return;
+      }
+      await handleTelegramTest(req, res);
+    }
+  );
 
   // Upload photo, video, or MP3 audio file to local server storage (never Firebase/Firestore)
   app.post(
@@ -317,14 +350,14 @@ async function startServer() {
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    const { botToken, chatId } = getTelegramEnv();
+    const config = getTelegramConfig();
     console.log(`Server listening on http://0.0.0.0:${PORT}`);
-    if (!botToken || !chatId) {
+    if (!config.configured) {
       console.warn(
         '[Telegram] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID. Add both in Render Dashboard -> Environment so notifications can send.'
       );
     } else {
-      console.log('[Telegram] Notifications configured.');
+      console.log(`[Telegram] Notifications ready (${config.chatIds.length} target chat(s)).`);
     }
   });
 }
