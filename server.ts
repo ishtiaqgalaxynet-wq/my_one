@@ -5,7 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import express, { type Request, type Response } from 'express';
 import { handleDriveFileProxy } from './api/_lib/driveProxy.ts';
-import { handleTelegramNotify } from './api/_lib/telegramNotify.ts';
+import { getTelegramEnv, handleTelegramNotify } from './api/_lib/telegramNotify.ts';
 
 interface FirebaseAppletConfig {
   projectId: string;
@@ -139,7 +139,8 @@ async function startServer() {
   app.set('trust proxy', true);
 
   app.get('/api/health', (_req: Request, res: Response) => {
-    res.json({ ok: true });
+    const { botToken, chatId } = getTelegramEnv();
+    res.json({ ok: true, telegramConfigured: Boolean(botToken && chatId) });
   });
 
   // Notify site owner via Telegram on first visit and love/hug interactions
@@ -316,7 +317,15 @@ async function startServer() {
   }
 
   httpServer.listen(PORT, '0.0.0.0', () => {
+    const { botToken, chatId } = getTelegramEnv();
     console.log(`Server listening on http://0.0.0.0:${PORT}`);
+    if (!botToken || !chatId) {
+      console.warn(
+        '[Telegram] Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID. Add both in Render Dashboard -> Environment so notifications can send.'
+      );
+    } else {
+      console.log('[Telegram] Notifications configured.');
+    }
   });
 }
 

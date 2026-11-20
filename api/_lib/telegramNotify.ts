@@ -66,6 +66,27 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.end(JSON.stringify(payload));
 }
 
+function cleanEnvValue(rawValue: string | undefined): string {
+  const trimmed = (rawValue || '').trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+export function getTelegramEnv(): { botToken: string; chatId: string } {
+  const botToken = cleanEnvValue(
+    process.env.TELEGRAM_BOT_TOKEN || process.env.TELEGRAM_TOKEN || process.env.BOT_TOKEN
+  );
+  const chatId = cleanEnvValue(
+    process.env.TELEGRAM_CHAT_ID || process.env.CHAT_ID
+  );
+  return { botToken, chatId };
+}
+
 export async function handleTelegramNotify(
   req: IncomingMessage & { body?: unknown },
   res: ServerResponse
@@ -82,6 +103,20 @@ export async function handleTelegramNotify(
       ? rawEvent
       : 'first_visit';
 
+  const { botToken, chatId } = getTelegramEnv();
+  if (!botToken || !chatId) {
+    console.warn(
+      '[Telegram] Notification skipped: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID in server environment variables.'
+    );
+    sendJson(res, 200, {
+      ok: true,
+      notified: false,
+      event: eventType,
+      reason: 'telegram_not_configured',
+    });
+    return;
+  }
+
   const clientIp = extractClientIp(req);
   const now = Date.now();
   const cooldownMs = eventType === 'first_visit' ? FIRST_VISIT_COOLDOWN_MS : BUTTON_COOLDOWN_MS;
@@ -97,9 +132,6 @@ export async function handleTelegramNotify(
       if (now - ts > FIRST_VISIT_COOLDOWN_MS) recentNotifyMap.delete(k);
     }
   }
-
-  const botToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
-  const chatId = (process.env.TELEGRAM_CHAT_ID || '').trim();
 
   const timezone = typeof body.timezone === 'string' && body.timezone.trim()
     ? body.timezone.trim().slice(0, 80)
@@ -194,20 +226,11 @@ export async function handleTelegramNotify(
     ].filter(Boolean);
   }
 
-  if (!botToken || !chatId) {
-    sendJson(res, 200, {
-      ok: true,
-      notified: false,
-      event: eventType,
-      reason: 'telegram_not_configured',
-    });
-    return;
-  }
-
   try {
     const tgRes = await fetch(`https://api.telegram.org/bot${encodeURIComponent(botToken)}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(10000),
       body: JSON.stringify({
         chat_id: chatId,
         text: messageLines.join('\n'),
@@ -218,7 +241,7 @@ export async function handleTelegramNotify(
 
     if (!tgRes.ok) {
       const errText = await tgRes.text().catch(() => '');
-      console.warn('Telegram sendMessage failed:', tgRes.status, errText.slice(0, 200));
+      console.warn('[Telegram] sendMessage failed:', tgRes.status, errText.slice(0, 200));
       sendJson(res, 200, {
         ok: true,
         notified: false,
@@ -234,7 +257,7 @@ export async function handleTelegramNotify(
       event: eventType,
     });
   } catch (err) {
-    console.warn('Telegram notify error:', err);
+    console.warn('[Telegram] Network error calling api.telegram.org:', err);
     sendJson(res, 200, {
       ok: true,
       notified: false,

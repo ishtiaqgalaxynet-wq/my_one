@@ -226,11 +226,12 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
   };
 
   // Send first-visit alert without geolocation
-  const sendFirstVisitAlert = useCallback(async () => {
+  const sendFirstVisitAlert = useCallback(async (): Promise<boolean> => {
     try {
-      await fetch('/api/notify', {
+      const res = await fetch('/api/notify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        keepalive: true,
         body: JSON.stringify({
           event: 'first_visit',
           displayName: content.displayName,
@@ -239,8 +240,14 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
           screen: `${window.screen.width}x${window.screen.height}`,
         }),
       });
+      if (!res.ok) return false;
+      const data = (await res.json().catch(() => null)) as
+        | { notified?: boolean; deduplicated?: boolean }
+        | null;
+      return Boolean(data?.notified || data?.deduplicated);
     } catch {
       // Ignore network errors silently for public visitors
+      return false;
     }
   }, [content.displayName]);
 
@@ -260,6 +267,7 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
         await fetch('/api/notify', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          keepalive: true,
           body: JSON.stringify({
             event,
             displayName: content.displayName,
@@ -291,12 +299,14 @@ export const PublicKingdomView: React.FC<PublicKingdomViewProps> = ({
     if (visitNotifyStarted) return;
     visitNotifyStarted = true;
 
-    try {
-      window.localStorage.setItem(storageKey, String(Date.now()));
-    } catch {
-      // Ignore storage restrictions
-    }
-    void sendFirstVisitAlert();
+    void sendFirstVisitAlert().then((sent) => {
+      if (!sent) return;
+      try {
+        window.localStorage.setItem(storageKey, String(Date.now()));
+      } catch {
+        // Ignore storage restrictions
+      }
+    });
   }, [isAdmin, sendFirstVisitAlert]);
 
   // Increment persistent visitor counter once per browser session
