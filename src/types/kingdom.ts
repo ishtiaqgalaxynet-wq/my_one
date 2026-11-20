@@ -123,6 +123,13 @@ export interface SiteStats {
   updatedAt?: unknown;
 }
 
+export interface DailySiteStats {
+  date: string;
+  visitorCount: number;
+  hugCount: number;
+  updatedAt?: unknown;
+}
+
 export type SlotCategory = 'hero' | 'social' | 'collage';
 
 export interface SlotDefinition {

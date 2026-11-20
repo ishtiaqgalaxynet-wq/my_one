@@ -24,10 +24,20 @@ import {
   Search,
   Shield,
   Trash2,
+  TrendingUp,
   Upload,
   UserPlus,
   X,
 } from 'lucide-react';
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import {
   deleteGoogleDriveFile,
   type DriveMediaFile,
@@ -55,11 +65,13 @@ import {
 } from '../lib/imageUtils';
 import {
   type AdminUser,
+  type DailySiteStats,
   DEFAULT_SITE_CONTENT,
   MAX_LENGTHS,
   type MediaType,
   type PhotoItem,
   type SiteContent,
+  type SiteStats,
   SLOT_DEFINITIONS,
   type SlotDefinition,
 } from '../types/kingdom';
@@ -94,6 +106,8 @@ interface AdminDashboardProps {
   siteContent: SiteContent;
   hasRemoteContent: boolean;
   photos: PhotoItem[];
+  siteStats: SiteStats;
+  dailyStats: DailySiteStats[];
   admins: AdminUser[];
   onSaveSiteContent: (content: SiteContent) => Promise<void>;
   onSaveBackgroundMusic: (params: {
@@ -158,6 +172,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   siteContent,
   hasRemoteContent,
   photos,
+  siteStats,
+  dailyStats,
   admins,
   onSaveSiteContent,
   onSaveBackgroundMusic,
@@ -195,6 +211,39 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const keys = Object.keys(DEFAULT_SITE_CONTENT) as Array<keyof SiteContent>;
     return keys.some((k) => draftContent[k] !== siteContent[k]);
   }, [draftContent, siteContent]);
+
+  const visitorChartData = useMemo(() => {
+    return dailyStats.map((entry, idx) => {
+      const [y, m, d] = entry.date.split('-').map(Number);
+      const parsed = new Date(y, (m || 1) - 1, d || 1);
+      const shortDate = parsed.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+      });
+      const isToday = idx === dailyStats.length - 1;
+      return {
+        ...entry,
+        label: isToday ? 'Today' : shortDate,
+        fullDate: parsed.toLocaleDateString('en-US', {
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric',
+        }),
+      };
+    });
+  }, [dailyStats]);
+
+  const sevenDayVisitors = useMemo(
+    () => dailyStats.reduce((sum, item) => sum + item.visitorCount, 0),
+    [dailyStats]
+  );
+
+  const todayVisitors = dailyStats[dailyStats.length - 1]?.visitorCount ?? 0;
+
+  const peakDayVisitors = useMemo(
+    () => dailyStats.reduce((max, item) => Math.max(max, item.visitorCount), 0),
+    [dailyStats]
+  );
 
   // Photo manager state
   const [photoFilter, setPhotoFilter] = useState<PhotoFilter>('all');
@@ -1325,6 +1374,121 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </p>
                 </div>
               </div>
+
+              {/* Visitor Insights (Recharts 7-Day Line Chart) */}
+              <section
+                aria-label="Visitor Insights"
+                className="rounded-xl border border-slate-800 bg-slate-900 p-5 space-y-5"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-[#7251b5]/25 border border-[#c19ee0]/30 text-[#dec9e9] flex items-center justify-center shrink-0">
+                      <TrendingUp className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h2 className="text-base font-semibold text-white">
+                        Visitor Insights
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Daily visitor traffic trend over the last 7 days
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:flex sm:items-center gap-2.5 sm:gap-4">
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+                      <p className="text-[11px] text-slate-400">Last 7 Days</p>
+                      <p className="text-sm font-bold font-mono-tabular text-[#dec9e9]">
+                        {sevenDayVisitors.toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+                      <p className="text-[11px] text-slate-400">Today</p>
+                      <p className="text-sm font-bold font-mono-tabular text-white">
+                        {todayVisitors.toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+                      <p className="text-[11px] text-slate-400">Peak Day</p>
+                      <p className="text-sm font-bold font-mono-tabular text-white">
+                        {peakDayVisitors.toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+                      <p className="text-[11px] text-slate-400">All-Time · Hugs</p>
+                      <p className="text-sm font-bold font-mono-tabular text-white">
+                        {siteStats.visitorCount.toLocaleString()} · {siteStats.hugCount.toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="h-64 w-full min-w-0">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart
+                      data={visitorChartData}
+                      margin={{ top: 10, right: 16, left: -12, bottom: 4 }}
+                    >
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        stroke="#334155"
+                        strokeOpacity={0.5}
+                        vertical={false}
+                      />
+                      <XAxis
+                        dataKey="label"
+                        stroke="#94a3b8"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={{ stroke: '#334155' }}
+                      />
+                      <YAxis
+                        allowDecimals={false}
+                        stroke="#94a3b8"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: '#020617',
+                          borderColor: '#334155',
+                          borderRadius: '0.75rem',
+                          color: '#f8fafc',
+                          fontSize: '12px',
+                        }}
+                        labelFormatter={(_label, payload) => {
+                          const item = payload?.[0]?.payload as { fullDate?: string } | undefined;
+                          return item?.fullDate ?? '';
+                        }}
+                        formatter={(value: unknown) => [
+                          `${Number(value ?? 0).toLocaleString()} visitors`,
+                          'Traffic',
+                        ]}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="visitorCount"
+                        name="Visitors"
+                        stroke="#c19ee0"
+                        strokeWidth={2.5}
+                        dot={{
+                          r: 4,
+                          fill: '#7251b5',
+                          stroke: '#dec9e9',
+                          strokeWidth: 2,
+                        }}
+                        activeDot={{
+                          r: 6,
+                          fill: '#f6f1fc',
+                          stroke: '#a06cd5',
+                          strokeWidth: 2,
+                        }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </section>
 
               {/* Quick Actions */}
               <div className="rounded-xl border border-slate-800 bg-slate-900 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">

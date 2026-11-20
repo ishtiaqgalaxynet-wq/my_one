@@ -449,6 +449,39 @@
         "visitorCount",
         "updatedAt"
       ]
+    },
+    "DailySiteStats": {
+      "title": "DailySiteStats",
+      "description": "Daily visitor and hug counts keyed by YYYY-MM-DD for 7-day trend analytics.",
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "description": "Date key in YYYY-MM-DD format.",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "visitorCount": {
+          "type": "integer",
+          "description": "Total visitor sessions recorded on this date."
+        },
+        "hugCount": {
+          "type": "integer",
+          "description": "Total hugs sent on this date."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the daily counter was last updated."
+        }
+      },
+      "required": [
+        "date",
+        "visitorCount",
+        "hugCount",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -487,6 +520,12 @@
         "$ref": "#/entities/SiteStats"
       },
       "description": "Stores shared public counters (hugCount and visitorCount) at /site_stats/counters."
+    },
+    "/site_stats_daily/{dateKey}": {
+      "schema": {
+        "$ref": "#/entities/DailySiteStats"
+      },
+      "description": "Stores daily visitor and hug counts keyed by YYYY-MM-DD."
     }
   }
 }

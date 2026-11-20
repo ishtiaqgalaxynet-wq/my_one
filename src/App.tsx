@@ -32,6 +32,7 @@ function KingdomApp() {
     photosLoaded,
     siteStats,
     statsLoaded,
+    dailyStats,
     admins,
     saveSiteContent,
     saveBackgroundMusic,
@@ -157,6 +158,8 @@ function KingdomApp() {
           siteContent={siteContent}
           hasRemoteContent={hasRemoteContent}
           photos={photos}
+          siteStats={siteStats}
+          dailyStats={dailyStats}
           admins={admins}
           onSaveSiteContent={saveSiteContent}
           onSaveBackgroundMusic={saveBackgroundMusic}

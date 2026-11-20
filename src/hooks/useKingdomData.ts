@@ -33,6 +33,7 @@ import {
 import { deleteServerMediaUrl } from '../lib/imageUtils';
 import {
   type AdminUser,
+  type DailySiteStats,
   DEFAULT_SITE_CONTENT,
   MAX_LENGTHS,
   type MediaType,
@@ -44,6 +45,25 @@ import {
   SLOT_DEFINITIONS,
   SUPER_ADMIN_EMAIL,
 } from '../types/kingdom';
+
+function getLocalDateKey(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getLast7DateKeys(): string[] {
+  const keys: string[] = [];
+  const base = new Date();
+  base.setHours(12, 0, 0, 0);
+  for (let offset = 6; offset >= 0; offset--) {
+    const d = new Date(base);
+    d.setDate(base.getDate() - offset);
+    keys.push(getLocalDateKey(d));
+  }
+  return keys;
+}
 
 const videoSourceCache = new Map<string, string>();
 const musicSourceCache = new Map<string, string>();
@@ -71,6 +91,9 @@ export function useKingdomData() {
 
   const [siteStats, setSiteStats] = useState<SiteStats>({ hugCount: 0, visitorCount: 0 });
   const [statsLoaded, setStatsLoaded] = useState(false);
+  const [dailyStats, setDailyStats] = useState<DailySiteStats[]>(() =>
+    getLast7DateKeys().map((date) => ({ date, visitorCount: 0, hugCount: 0 }))
+  );
 
   const [admins, setAdmins] = useState<AdminUser[]>([]);
 
@@ -261,6 +284,46 @@ export function useKingdomData() {
 
     return () => unsubscribe();
   }, [authReady]);
+
+  // 6. Last 7 days daily traffic listener (site_stats_daily/{YYYY-MM-DD} for admins)
+  useEffect(() => {
+    if (!authReady || !isAdmin) {
+      return;
+    }
+
+    const dateKeys = getLast7DateKeys();
+    const unsubs = dateKeys.map((dateKey) =>
+      onSnapshot(
+        doc(db, 'site_stats_daily', dateKey),
+        (snap) => {
+          const data = snap.exists() ? (snap.data() as Partial<DailySiteStats>) : {};
+          const visitorCount =
+            typeof data.visitorCount === 'number' && Number.isFinite(data.visitorCount)
+              ? Math.max(0, Math.floor(data.visitorCount))
+              : 0;
+          const hugCount =
+            typeof data.hugCount === 'number' && Number.isFinite(data.hugCount)
+              ? Math.max(0, Math.floor(data.hugCount))
+              : 0;
+
+          setDailyStats((prev) => {
+            const byDate = new Map(prev.map((item) => [item.date, item]));
+            byDate.set(dateKey, { date: dateKey, visitorCount, hugCount });
+            return dateKeys.map(
+              (key) => byDate.get(key) ?? { date: key, visitorCount: 0, hugCount: 0 }
+            );
+          });
+        },
+        (error) => {
+          handleFirestoreError(error, OperationType.GET, `site_stats_daily/${dateKey}`);
+        }
+      )
+    );
+
+    return () => {
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, [authReady, isAdmin]);
 
   // Auth actions
   const signInWithGoogle = useCallback(async () => {
@@ -745,29 +808,53 @@ export function useKingdomData() {
   );
 
   const incrementHugCount = useCallback(async (): Promise<number> => {
+    const todayKey = getLocalDateKey();
     const path = 'site_stats/counters';
     const statsRef = doc(db, 'site_stats', 'counters');
+    const dailyRef = doc(db, 'site_stats_daily', todayKey);
     try {
       return await runTransaction(db, async (tx) => {
-        const snap = await tx.get(statsRef);
+        const [snap, dailySnap] = await Promise.all([tx.get(statsRef), tx.get(dailyRef)]);
+
+        const nextHugCount = !snap.exists()
+          ? 1
+          : (typeof (snap.data() as Partial<SiteStats>).hugCount === 'number' &&
+              Number.isFinite((snap.data() as Partial<SiteStats>).hugCount)
+              ? Math.max(0, Math.floor((snap.data() as Partial<SiteStats>).hugCount!))
+              : 0) + 1;
+
         if (!snap.exists()) {
           tx.set(statsRef, {
-            hugCount: 1,
+            hugCount: nextHugCount,
             visitorCount: 0,
             updatedAt: serverTimestamp(),
           });
-          return 1;
+        } else {
+          tx.update(statsRef, {
+            hugCount: nextHugCount,
+            updatedAt: serverTimestamp(),
+          });
         }
-        const data = snap.data() as Partial<SiteStats>;
-        const current =
-          typeof data.hugCount === 'number' && Number.isFinite(data.hugCount)
-            ? Math.max(0, Math.floor(data.hugCount))
-            : 0;
-        const nextHugCount = current + 1;
-        tx.update(statsRef, {
-          hugCount: nextHugCount,
-          updatedAt: serverTimestamp(),
-        });
+
+        if (!dailySnap.exists()) {
+          tx.set(dailyRef, {
+            date: todayKey,
+            visitorCount: 0,
+            hugCount: 1,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          const dailyData = dailySnap.data() as Partial<DailySiteStats>;
+          const currentDailyHugs =
+            typeof dailyData.hugCount === 'number' && Number.isFinite(dailyData.hugCount)
+              ? Math.max(0, Math.floor(dailyData.hugCount))
+              : 0;
+          tx.update(dailyRef, {
+            hugCount: currentDailyHugs + 1,
+            updatedAt: serverTimestamp(),
+          });
+        }
+
         return nextHugCount;
       });
     } catch (error) {
@@ -776,29 +863,53 @@ export function useKingdomData() {
   }, []);
 
   const recordVisitor = useCallback(async (): Promise<number> => {
+    const todayKey = getLocalDateKey();
     const path = 'site_stats/counters';
     const statsRef = doc(db, 'site_stats', 'counters');
+    const dailyRef = doc(db, 'site_stats_daily', todayKey);
     try {
       return await runTransaction(db, async (tx) => {
-        const snap = await tx.get(statsRef);
+        const [snap, dailySnap] = await Promise.all([tx.get(statsRef), tx.get(dailyRef)]);
+
+        const nextVisitorCount = !snap.exists()
+          ? 1
+          : (typeof (snap.data() as Partial<SiteStats>).visitorCount === 'number' &&
+              Number.isFinite((snap.data() as Partial<SiteStats>).visitorCount)
+              ? Math.max(0, Math.floor((snap.data() as Partial<SiteStats>).visitorCount!))
+              : 0) + 1;
+
         if (!snap.exists()) {
           tx.set(statsRef, {
             hugCount: 0,
-            visitorCount: 1,
+            visitorCount: nextVisitorCount,
             updatedAt: serverTimestamp(),
           });
-          return 1;
+        } else {
+          tx.update(statsRef, {
+            visitorCount: nextVisitorCount,
+            updatedAt: serverTimestamp(),
+          });
         }
-        const data = snap.data() as Partial<SiteStats>;
-        const current =
-          typeof data.visitorCount === 'number' && Number.isFinite(data.visitorCount)
-            ? Math.max(0, Math.floor(data.visitorCount))
-            : 0;
-        const nextVisitorCount = current + 1;
-        tx.update(statsRef, {
-          visitorCount: nextVisitorCount,
-          updatedAt: serverTimestamp(),
-        });
+
+        if (!dailySnap.exists()) {
+          tx.set(dailyRef, {
+            date: todayKey,
+            visitorCount: 1,
+            hugCount: 0,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          const dailyData = dailySnap.data() as Partial<DailySiteStats>;
+          const currentDailyVisitors =
+            typeof dailyData.visitorCount === 'number' && Number.isFinite(dailyData.visitorCount)
+              ? Math.max(0, Math.floor(dailyData.visitorCount))
+              : 0;
+          tx.update(dailyRef, {
+            visitorCount: currentDailyVisitors + 1,
+            updatedAt: serverTimestamp(),
+          });
+        }
+
         return nextVisitorCount;
       });
     } catch (error) {
@@ -823,6 +934,7 @@ export function useKingdomData() {
     photosLoaded,
     siteStats,
     statsLoaded,
+    dailyStats,
     admins,
     saveSiteContent,
     saveBackgroundMusic,
